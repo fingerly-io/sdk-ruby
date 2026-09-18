@@ -1,0 +1,272 @@
+# fingerly-ruby
+
+Server-side event reads, webhook verification and a same-origin proxy for
+Ruby. Version 0.1.0 is prepared for release; the repository is private and
+nothing has been published to RubyGems.
+
+```ruby
+gem "fingerly", "~> 0.1"
+```
+
+```ruby
+require "fingerly"
+
+fingerly = Fingerly::Client.new(secret_key: ENV.fetch("FINGERLY_SECRET_KEY"))
+
+event = fingerly.events.get(request_id)
+page = fingerly.events.list(level: "high", limit: 50)
+```
+
+Event reads require `fly_sk_{eu|us}_{production|staging|development}_` keys.
+The key selects the regional endpoint; `endpoint:` overrides it for a local
+API. Public, proxy, management, malformed and unsupported keys are rejected
+before network access, by the constructor rather than by the first call.
+Requests do not follow redirects. `get` and `list` each perform one request
+and never retry.
+
+Ruby 3.1 or newer. No runtime dependencies: everything it needs is in the
+standard library. Rack is a contract rather than a dependency, so the proxy
+speaks it without loading it and cannot pin a version against your own.
+
+## There is no asynchronous client, and none is needed
+
+The Python SDK ships two clients because ASGI and WSGI are two live server
+standards, and a blocking call inside FastAPI stalls its event loop. Ruby has
+one server interface, Rack, and every framework on it calls your application
+synchronously.
+
+The stack that is not thread-per-request is covered anyway. `Net::HTTP` has
+honoured the fiber scheduler since Ruby 3.0, so under Falcon or the `async`
+gem the blocking reads in this SDK yield to the scheduler rather than holding
+the thread. Concurrent calls overlap without a second API to choose between,
+and there are tests asserting exactly that under both a fiber scheduler and
+plain threads.
+
+## Deadlines
+
+`timeout:` bounds the whole exchange, including receiving the body.
+
+That takes care on this platform. `Net::HTTP` has `open_timeout`,
+`read_timeout` and `write_timeout`, but each bounds a single operation: a
+server that answers and then sends one byte a second would satisfy all three
+forever. The client tracks a deadline across the exchange and shrinks the
+socket's own read timeout to whatever is left of it before each chunk, so the
+bound is tight rather than a multiple of the timeout.
+
+Connections are kept per thread, and per fiber under a scheduler, which is
+what `Thread#[]` already means. `Net::HTTP` cannot be shared between them, so
+this reuses a connection exactly as far as it is safe to and no further. They
+are recycled by age as well: a connection held for the life of a process pins
+whatever DNS answered first. A connection the other end closed while it was
+idle is reopened and the request sent again, but only for `GET`, because a
+`POST` that may already have arrived must never be sent twice.
+
+## Errors
+
+Every runtime failure derives from `Fingerly::Error`. A bad option raises
+`Fingerly::ConfigurationError`, which is an `ArgumentError`: a key that was
+never valid is a programming mistake rather than something a rescue around the
+call site can help with.
+
+```ruby
+begin
+  event = fingerly.events.get(request_id)
+rescue Fingerly::APIError => e
+  return "refuse" if e.status == 404
+
+  raise
+end
+```
+
+`Fingerly::APIError` carries `status`, and optional `code`, `details` and
+`request_id`. The secret key is stripped from all three, and the response body
+is never echoed. `event_not_found?` names the one retryable read failure, so
+it needs no status-and-code check of your own. A deadline raises
+`Fingerly::TimeoutError`; an unreachable API raises
+`Fingerly::ConnectionError`.
+
+## Unscored events
+
+`event.suspect_score` is `nil` when the request was not scored. Never read nil
+as zero: a visitor about whom nothing fired scores 0, while a submission that
+was never enriched has no score at all. `scored?` states the distinction at
+the call site.
+
+```ruby
+unless event.scored?
+  # Decide on something else; do not treat it as clean.
+end
+```
+
+`event.raw` keeps the response body exactly as it arrived, so a field the API
+adds later is reachable without a gem upgrade.
+
+## Wait for a fresh identification
+
+Identification answers before the event is archived, so reach for this only
+when you have just identified a visitor:
+
+```ruby
+event = fingerly.events.wait_for(request_id, timeout: 10, interval: 0.25)
+```
+
+Only `event_not_found?` is retried; every other failure is raised at once.
+When the event is still missing at the deadline, `Fingerly::TimeoutError`
+keeps the last `Fingerly::APIError` as its `cause`, so the reason it kept
+waiting is not lost.
+
+## Verify a backend action
+
+Read the event with a server-only key. Check that its tag matches your action,
+that it is recent, that its environment is correct, and that it was scored.
+Apply your own policy to the server's verdict. Do not authorize an action
+using scores or visitor identifiers supplied by the browser. Tags correlate
+events; they do not replace your application's authentication or replay
+protection.
+
+## Webhooks
+
+```ruby
+class FingerlyWebhooksController < ActionController::API
+  def create
+    payload = request.raw_post
+
+    valid = Fingerly::Webhooks.verify(
+      secret: ENV.fetch("FINGERLY_WEBHOOK_SECRET"),
+      payload: payload,
+      timestamp: request.headers["x-fingerly-timestamp"],
+      signature: request.headers["x-fingerly-signature"]
+    )
+    return head :bad_request unless valid
+
+    event = Fingerly::Webhooks.parse(payload)
+    FingerlyEventJob.perform_later(event.id, payload)   # deduplicate on the ID
+    head :no_content
+  end
+end
+```
+
+Verify the exact raw bytes before parsing them. `request.raw_post` is those
+bytes; a body reconstructed from parsed parameters is not. Signatures cover
+the timestamp and body. The default replay tolerance is five minutes; persist
+processed `id` values to deduplicate deliveries. During signing-secret
+rotation, any matching signature in the comma-separated header is accepted.
+Malformed or missing input is a false result, never an exception, and a body
+that is not valid UTF-8 verifies rather than raising on concatenation.
+
+`WebhookEvent#data` stays a plain `Hash`, so a new event type needs no gem
+upgrade.
+
+## Same-origin proxy
+
+Content blockers refuse browser requests to third-party APIs, and a refused
+identification is a visitor never identified. Mount the proxy on a path of
+your own site and those requests become first-party. The proxy key is what
+lets that hop declare the visitor's real address, origin and user agent; a
+public key alone never can, so nobody can spoof them.
+
+Rack is the one interface every Ruby server and framework shares, so there is
+one middleware and no per-framework variants.
+
+```ruby
+# config/application.rb
+config.middleware.use Fingerly::Proxy,
+  proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
+  prefix: "/metrics",
+  client_ip: ->(request) { request.header("CF-Connecting-IP") }
+```
+
+```ruby
+# config.ru, for Sinatra, Hanami or a bare Rack app
+use Fingerly::Proxy,
+    proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
+    prefix: "/metrics",
+    client_ip: ->(request) { request.header("CF-Connecting-IP") }
+run MyApp
+```
+
+Put it early, ahead of authentication: the browser SDK sends no cookies and
+carries no user, and a filter that redirected it to a sign-in page would break
+identification for every signed-out visitor.
+
+Then point the browser SDK at the same path:
+
+```ts
+const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/metrics' })
+```
+
+### What the proxy does
+
+It forwards only `POST` to `{prefix}/api/v1/identify` and
+`{prefix}/api/v1/events/{request_id}/supplement`. Anything else is passed
+along to your application, or answered `404` when the proxy is mounted with no
+application behind it. A wrong method on a path Fingerly owns gets `405`.
+Event reads need a secret key and stay unreachable from a browser by
+construction.
+
+The browser must present a public key from the same region and environment as
+the proxy key, or the request gets `401`. Bodies over 1 MiB get `413`,
+enforced while reading rather than after buffering. Responses are marked
+`no-store`. Only the content type, the visitor metadata Fingerly needs, and an
+`Idempotency-Key` are forwarded; customer cookies and authorization headers
+never are.
+
+The middleware decides from the path alone before it reads anything. It sees
+every request in the stack, and reading the body to find out whether one
+belongs to Fingerly would have consumed it: under Rack 3 `rack.input` is not
+required to rewind, so your application would receive an empty request rather
+than an error.
+
+`prefix` is the path within your application. It excludes anything a sub-URI
+deployment puts in `SCRIPT_NAME`, because the proxy matches `PATH_INFO`, which
+means the same thing in every mount. A prefix that `Rack::URLMap` has already
+stripped works too: the path is accepted as either carrying the prefix or
+having had it removed. Choose a neutral one. Blockers look for words such as
+`fingerprint`, `tracking` and `fingerly`.
+
+Relayed headers are lowercased and repeats joined with `", "`, which is the
+one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name
+outright, and Rack 2 refuses the array Rack 3 would rather have. `set-cookie`
+is dropped rather than joined, since it is the one header where joining is
+wrong and the API sets none.
+
+> **`client_ip` is the one thing you must get right.** Resolve it from a
+> header your own infrastructure sets, such as your load balancer's or CDN's.
+> Never read the left-most `X-Forwarded-For` value: the visitor writes it.
+
+## Development and release preparation
+
+```sh
+bundle install
+bundle exec rake                 # tests, RuboCop and the RBS signatures
+
+FINGERLY_CONTRACT_DIR=../../contract bundle exec ruby tools/sync_contract.rb
+```
+
+Tests run with Ruby's own warnings on, and every proxy response goes through
+`Rack::Lint`, which holds it to the Rack 3 spec more strictly than any
+assertion written by hand. The fake API is a real WEBrick server on a loopback
+port rather than a stubbed `Net::HTTP`: a stub shares this SDK's assumptions
+about framing, keep-alive and compression, so it cannot disprove any of them.
+
+`sig/fingerly.rbs` describes the public surface. `rbs validate` proves the
+signatures are consistent; `test/signatures_test.rb` proves they describe the
+library that exists, which matters because several readers are defined by
+metaprogramming.
+
+The vendored synthetic contract snapshot makes tests independent of sibling
+repositories. Its hashes are checked by `ContractTest`, so there is no
+separate check step. Never put production secrets in fixtures.
+
+The gemspec sets `allowed_push_host` to an unresolvable host. Nothing here is
+published yet, and a private SDK reaching a public registry is not a mistake
+anybody can take back.
+
+## Source structure
+
+`Client` holds the connection and the options; `Events` owns the reads and the
+polling loop, and `Event`, `EventPage` and `EventTrigger` are what they speak
+in. `Webhooks` verifies signatures. `Proxy` holds every proxy decision, with
+`ProxyRequest` as the shape `client_ip` is given. `Config` validates every
+caller-supplied option before any network access, and `Transport` is the one
+place that knows how to bound an exchange and reuse a socket.
