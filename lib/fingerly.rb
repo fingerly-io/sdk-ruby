@@ -7,6 +7,7 @@ require_relative "fingerly/models"
 require_relative "fingerly/transport"
 require_relative "fingerly/client"
 require_relative "fingerly/webhooks"
+require_relative "fingerly/proxy"
 
 # Server-side Fingerly SDK.
 #
