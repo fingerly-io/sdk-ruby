@@ -13,4 +13,9 @@ end
 
 RuboCop::RakeTask.new
 
-task default: %i[test rubocop]
+desc "Check the RBS signatures against the library"
+task :signatures do
+  sh "bundle exec rbs --log-level=error -I sig validate"
+end
+
+task default: %i[test rubocop signatures]

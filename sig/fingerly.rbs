@@ -1,0 +1,200 @@
+# Type signatures for the Fingerly server SDK.
+#
+# RBS is Ruby's answer to a typed public surface: an editor, Steep or a
+# consumer's own type check reads these without the SDK shipping a type
+# checker. `signatures_test.rb` asserts that every method named here exists,
+# so a reader that was added by metaprogramming cannot drift out of them.
+
+module Fingerly
+  VERSION: String
+
+  class Error < StandardError
+  end
+
+  class ConfigurationError < ArgumentError
+  end
+
+  class APIError < Error
+    attr_reader status: Integer
+    attr_reader code: String?
+    attr_reader details: untyped
+    attr_reader request_id: String?
+
+    def initialize: (status: Integer, ?code: String?, ?details: untyped, ?request_id: String?) -> void
+    def event_not_found?: () -> bool
+  end
+
+  class TimeoutError < Error
+  end
+
+  class ConnectionError < Error
+  end
+
+  class EventTrigger
+    attr_reader signal: String?
+    attr_reader weight: Integer
+    attr_reader confidence: String?
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class Event
+    STRING_FIELDS: Array[String]
+
+    attr_reader request_id: String?
+    attr_reader visitor_id: String?
+    attr_reader state: String?
+    attr_reader environment: String?
+    attr_reader platform: String?
+    attr_reader sdk_platform: String?
+    attr_reader sdk_version: String?
+    attr_reader origin: String?
+    attr_reader url_host: String?
+    attr_reader url_path: String?
+    attr_reader tag: String?
+    attr_reader ip_address: String?
+    attr_reader country_code: String?
+    attr_reader country_name: String?
+    attr_reader asn: String?
+    attr_reader asn_name: String?
+    attr_reader anonymity_network: String?
+    attr_reader agent: String?
+    attr_reader agent_version: String?
+    attr_reader os: String?
+    attr_reader device_kind: String?
+    attr_reader visitor_kind: String?
+    attr_reader suspect_level: String?
+
+    attr_reader occurred_at: Time
+    attr_reader suspect_score: Integer?
+    attr_reader triggers: Array[EventTrigger]
+    attr_reader document: Hash[String, untyped]?
+    attr_reader deferred_signals: Hash[String, untyped]?
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+    def has_document?: () -> bool
+    def scored?: () -> bool
+  end
+
+  class EventPage
+    include Enumerable[Event]
+
+    attr_reader rows: Array[Event]
+    attr_reader page: Integer
+    attr_reader page_size: Integer
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+    def each: () { (Event) -> void } -> Array[Event]
+  end
+
+  class WebhookEvent
+    attr_reader id: String?
+    attr_reader type: String?
+    attr_reader version: Integer?
+    attr_reader organization_id: String?
+    attr_reader environment: String?
+    attr_reader created_at: Time?
+    attr_reader data: Hash[String, untyped]
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class Client
+    DEFAULT_TIMEOUT: Integer
+    DEFAULT_API_VERSION: String
+    USER_AGENT: String
+    MAX_ERROR_BODY: Integer
+
+    attr_reader events: Events
+
+    def initialize: (
+      secret_key: String,
+      ?endpoint: String?,
+      ?api_version: String,
+      ?timeout: Numeric,
+      ?configure_http: (^(untyped) -> void)?
+    ) -> void
+    def close: () -> void
+    def get: (String) -> Hash[String, untyped]
+  end
+
+  class Events
+    DEFAULT_WAIT_TIMEOUT: Integer
+    DEFAULT_POLL_INTERVAL: Float
+
+    def initialize: (Client) -> void
+    def get: (String) -> Event
+    def list: (
+      ?from: Time?,
+      ?to: Time?,
+      ?page: Integer?,
+      ?limit: Integer?,
+      ?visitor: String?,
+      ?level: String?
+    ) -> EventPage
+    def wait_for: (String, ?timeout: Numeric, ?interval: Numeric) -> Event
+
+    def self.escape: (untyped) -> String
+    def self.instant: (Time) -> String
+    def self.monotonic: () -> Float
+  end
+
+  module Webhooks
+    DEFAULT_TOLERANCE: Integer
+    SIGNATURE: Regexp
+    TIMESTAMP: Regexp
+    PREFIX: String
+
+    def self.verify: (
+      secret: String?,
+      payload: String?,
+      timestamp: String?,
+      signature: String?,
+      ?tolerance: Numeric,
+      ?now: Time?
+    ) -> bool
+    def self.parse: (String) -> WebhookEvent
+  end
+
+  class ProxyRequest
+    attr_reader request_method: String
+    attr_reader path: String
+    attr_reader peer_host: String?
+
+    def initialize: (Hash[String, untyped], String) -> void
+    def header: (String) -> String?
+    def headers: () -> Hash[String, String]
+    def self.headers_from: (Hash[String, untyped]) -> Hash[String, String]
+  end
+
+  class Proxy
+    DEFAULT_PREFIX: String
+    DEFAULT_MAX_BODY_BYTES: Integer
+    DEFAULT_TIMEOUT: Integer
+    USER_AGENT: String
+    BODILESS: Array[Integer]
+    CONNECTION_HEADERS: Array[String]
+
+    attr_reader max_body_bytes: Integer
+    attr_reader prefix: String
+    attr_reader api_version: String
+
+    def initialize: (
+      ?untyped app,
+      client_ip: ^(ProxyRequest) -> String?,
+      ?proxy_key: String?,
+      ?secret_key: String?,
+      ?prefix: String,
+      ?api_version: String,
+      ?upstream: String?,
+      ?max_body_bytes: Integer,
+      ?timeout: Numeric,
+      ?configure_http: (^(untyped) -> void)?
+    ) -> void
+    def handles?: (String) -> bool
+    def call: (Hash[String, untyped]) -> [Integer, Hash[String, String], Array[String]]
+  end
+end
