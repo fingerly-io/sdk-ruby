@@ -1,0 +1,72 @@
+plugins:
+  - rubocop-minitest
+
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - vendor/**/*
+
+# The SDK is one gem with a handful of well-named classes; the defaults here
+# are tuned for application code that can always be split again.
+Metrics/MethodLength:
+  Max: 40
+Metrics/AbcSize:
+  Max: 40
+Metrics/ModuleLength:
+  Max: 150
+Metrics/ParameterLists:
+  Max: 12
+  MaxOptionalParameters: 12
+Metrics/CyclomaticComplexity:
+  Max: 15
+Metrics/PerceivedComplexity:
+  Max: 15
+Metrics/BlockLength:
+  Exclude:
+    - test/**/*
+
+# A test class grows one method per case, and splitting it by line count would
+# scatter cases that belong together.
+Metrics/ClassLength:
+  Max: 250
+  Exclude:
+    - test/**/*
+
+Layout/LineLength:
+  Max: 100
+
+# Double quotes throughout, as the Shopify and Rails guides have it. A rule
+# that changes quoting by whether a string happens to interpolate makes every
+# edit a two-line diff.
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+# Tests name what they assert; a leading comment would repeat the method name.
+Style/Documentation:
+  Exclude:
+    - test/**/*
+
+# A keyword argument that must come before optional ones reads better where it
+# is declared than where a cop would like it.
+Style/KeywordParametersOrder:
+  Enabled: false
+
+# Anonymous block forwarding landed in 3.1, which is the floor, and its edges
+# there are not worth finding out about from a user's backtrace.
+Naming/BlockForwarding:
+  EnforcedStyle: explicit
+
+# has_document? is named for the wire field it reports. document? would sit
+# next to #document and read as "is this a document?" rather than "is there
+# one?".
+Naming/PredicatePrefix:
+  AllowedMethods:
+    - is_a?
+    - has_document?
+
+Minitest/MultipleAssertions:
+  Max: 20
