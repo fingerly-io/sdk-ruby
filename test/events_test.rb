@@ -86,57 +86,33 @@ class EventsTest < Minitest::Test
     end
   end
 
-  def test_wait_for_returns_the_event_once_it_is_archived
-    seen = 0
-    mutex = Mutex.new
-    handler = lambda do |_req, res|
-      archived = mutex.synchronize { (seen += 1) >= 3 }
-      res.status = archived ? 200 : 404
-      res["content-type"] = "application/json"
-      res.body = archived ? EVENT_JSON : NOT_FOUND
-    end
-    FakeAPI.run(handler) do |api|
-      event = client(api).events.wait_for("r1", timeout: 5, interval: 0.02)
-
-      assert_equal "r1", event.request_id
-      assert_equal 3, seen
-    end
-  end
-
-  def test_wait_for_retries_only_event_not_found
-    FakeAPI.run(FakeAPI.json(403, '{"error":{"code":"forbidden"}}')) do |api|
+  # An event is readable as soon as identification answers, so a missing one
+  # means a request id that was never issued: raised at once, in one request,
+  # rather than waited through.
+  def test_reports_a_missing_event_without_retrying
+    FakeAPI.run(FakeAPI.json(404, NOT_FOUND)) do |api|
       error = assert_raises(Fingerly::APIError) do
-        client(api).events.wait_for("r1", timeout: 5, interval: 0.02)
+        client(api).events.get("r1")
       end
 
-      assert_equal 403, error.status
+      assert_equal 404, error.status
+      assert_predicate error, :event_not_found?
+      assert_equal "trace", error.request_id
       assert_equal 1, api.requests.size
     end
   end
 
-  def test_wait_for_keeps_the_reason_it_kept_waiting
-    FakeAPI.run(FakeAPI.json(404, NOT_FOUND)) do |api|
-      error = assert_raises(Fingerly::TimeoutError) do
-        client(api).events.wait_for("r1", timeout: 0.2, interval: 0.02)
-      end
-
-      assert_includes error.message, "r1"
-      assert_kind_of Fingerly::APIError, error.cause
-      assert_predicate error.cause, :event_not_found?
-    end
-  end
-
-  def test_wait_for_refuses_a_non_positive_bound
-    FakeAPI.run(FakeAPI.json(404, NOT_FOUND)) do |api|
-      fingerly = client(api)
-
-      [{ timeout: 0 }, { interval: 0 }, { timeout: -1 }].each do |bound|
-        assert_raises(Fingerly::ConfigurationError, bound.inspect) do
-          fingerly.events.wait_for("r1", **bound)
+  def test_propagates_every_other_failure
+    [400, 403, 429, 500].each do |status|
+      FakeAPI.run(FakeAPI.json(status, '{"error":{"code":"other"}}')) do |api|
+        error = assert_raises(Fingerly::APIError) do
+          client(api).events.get("r1")
         end
-      end
 
-      assert_empty api.requests
+        assert_equal status, error.status
+        refute_predicate error, :event_not_found?
+        assert_equal 1, api.requests.size
+      end
     end
   end
 

@@ -143,9 +143,6 @@ module Fingerly
   # Reads events stored for the organization and environment of the client's
   # secret key. Reached as +fingerly.events+.
   class Events
-    DEFAULT_WAIT_TIMEOUT = 10
-    DEFAULT_POLL_INTERVAL = 0.25
-
     # @api private
     def initialize(client)
       @client = client
@@ -156,9 +153,9 @@ module Fingerly
     #
     # @param request_id [String] the +request_id+ returned by identification
     # @return [Event]
-    # @raise [APIError] on any non-2xx response. An event that has not been
-    #   archived yet gives +404 event_not_found+; use {#wait_for} right after
-    #   identifying a visitor.
+    # @raise [APIError] on any non-2xx response. An event is readable as soon
+    #   as identification answers, so +404 event_not_found+ means a request id
+    #   that was never issued.
     # @raise [TimeoutError] if the request exceeds the client timeout
     def get(request_id)
       raise ConfigurationError, "request_id is required" if request_id.to_s.empty?
@@ -193,45 +190,6 @@ module Fingerly
       EventPage.new(@client.get("/events#{suffix}"))
     end
 
-    # Polls until a newly identified event becomes readable.
-    #
-    # Identification answers before the event is archived, so reach for this
-    # only when you have just identified a visitor. Only a structured
-    # +404 event_not_found+ is retried; every other failure is raised at once.
-    #
-    # @param request_id [String] the +request_id+ returned by identification
-    # @param timeout [Numeric] the total time to keep polling, in seconds
-    # @param interval [Numeric] the delay between polls, in seconds
-    # @return [Event]
-    # @raise [TimeoutError] if the event is still missing at the deadline. The
-    #   last {APIError} is kept as the +cause+, so the reason it kept waiting
-    #   is not lost.
-    # @raise [ConfigurationError] if a bound is not positive
-    def wait_for(request_id, timeout: DEFAULT_WAIT_TIMEOUT, interval: DEFAULT_POLL_INTERVAL)
-      Config.positive_seconds(timeout, "timeout")
-      Config.positive_seconds(interval, "interval")
-
-      deadline = Events.monotonic + timeout
-      last_miss = nil
-      loop do
-        begin
-          return get(request_id)
-        rescue APIError => e
-          raise unless e.event_not_found?
-
-          last_miss = e
-        end
-
-        # Stop rather than sleep past the deadline for a poll that could not
-        # run before it.
-        if deadline - Events.monotonic <= interval
-          raise TimeoutError.new("Timed out waiting for event #{request_id}"), cause: last_miss
-        end
-
-        sleep interval
-      end
-    end
-
     # Percent-encodes a request id into exactly one path segment.
     #
     # Only RFC 3986 unreserved characters survive, so a slash cannot escape the
@@ -251,11 +209,6 @@ module Fingerly
       raise ConfigurationError, "from and to must be Time values" unless value.is_a?(Time)
 
       value.utc.iso8601(3)
-    end
-
-    # @api private
-    def self.monotonic
-      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
   end
 end

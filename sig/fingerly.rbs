@@ -122,9 +122,6 @@ module Fingerly
   end
 
   class Events
-    DEFAULT_WAIT_TIMEOUT: Integer
-    DEFAULT_POLL_INTERVAL: Float
-
     def initialize: (Client) -> void
     def get: (String) -> Event
     def list: (
@@ -135,11 +132,8 @@ module Fingerly
       ?visitor: String?,
       ?level: String?
     ) -> EventPage
-    def wait_for: (String, ?timeout: Numeric, ?interval: Numeric) -> Event
-
     def self.escape: (untyped) -> String
     def self.instant: (Time) -> String
-    def self.monotonic: () -> Float
   end
 
   module Webhooks

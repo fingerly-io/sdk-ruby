@@ -52,10 +52,10 @@ module Fingerly
       super(code ? "#{described} (#{code})" : described)
     end
 
-    # Whether this is the one retryable read failure: the event exists but has
-    # not been archived yet.
+    # Whether this is a read for an event that does not exist.
     #
-    # {Events#wait_for} polls on exactly this and nothing else.
+    # One is readable as soon as identification answers, so this means a
+    # request id that was never issued rather than one that has not landed.
     #
     # @return [Boolean]
     def event_not_found?
@@ -63,7 +63,7 @@ module Fingerly
     end
   end
 
-  # Raised when an operation does not finish within its time limit.
+  # Raised when a request does not finish within its time limit.
   #
   # The deadline covers reading the response body, not only the headers.
   class TimeoutError < Error; end

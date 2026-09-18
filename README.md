@@ -101,19 +101,21 @@ end
 `event.raw` keeps the response body exactly as it arrived, so a field the API
 adds later is reachable without a gem upgrade.
 
-## Wait for a fresh identification
+## Read an event you just identified
 
-Identification answers before the event is archived, so reach for this only
-when you have just identified a visitor:
+An event is readable as soon as identification answers, so this needs nothing
+special:
 
 ```ruby
-event = fingerly.events.wait_for(request_id, timeout: 10, interval: 0.25)
+event = fingerly.events.get(request_id)
 ```
 
-Only `event_not_found?` is retried; every other failure is raised at once.
-When the event is still missing at the deadline, `Fingerly::TimeoutError`
-keeps the last `Fingerly::APIError` as its `cause`, so the reason it kept
-waiting is not lost.
+Earlier versions had a `wait_for` that polled through the gap between
+identification and the event becoming queryable. There is no gap, so
+`event_not_found?` now means a request id that was never issued.
+
+The archived document arrives moments after the event itself, so check
+`has_document?` rather than assuming it is there.
 
 ## Verify a backend action
 
@@ -265,7 +267,7 @@ anybody can take back.
 ## Source structure
 
 `Client` holds the connection and the options; `Events` owns the reads and the
-polling loop, and `Event`, `EventPage` and `EventTrigger` are what they speak
+list filters, and `Event`, `EventPage` and `EventTrigger` are what they speak
 in. `Webhooks` verifies signatures. `Proxy` holds every proxy decision, with
 `ProxyRequest` as the shape `client_ip` is given. `Config` validates every
 caller-supplied option before any network access, and `Transport` is the one
