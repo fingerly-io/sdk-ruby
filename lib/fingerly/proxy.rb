@@ -143,7 +143,7 @@ module Fingerly
       @api_version = Config.normalize_api_version(api_version)
       @max_body_bytes = Config.positive_int(max_body_bytes, "max_body_bytes")
       @transport = Transport.new(
-        origin: Config.normalize_endpoint(upstream || @scope.origin),
+        origin: Config.normalize_endpoint(upstream || Config::DEFAULT_ENDPOINT),
         timeout: Config.positive_seconds(timeout, "timeout"),
         configure_http: configure_http
       )
@@ -240,9 +240,9 @@ module Fingerly
 
     # Decides which key to present upstream.
     #
-    # With a proxy key the browser must supply a public key for the same region
-    # and environment, which the proxy forwards alongside its own. The
-    # deprecated secret-key mode authenticates on its own.
+    # With a proxy key the browser must supply a public key for the same
+    # environment, which the proxy forwards alongside its own. The deprecated
+    # secret-key mode authenticates on its own.
     #
     # @return [String, nil] the key to forward, or nil when unauthorised
     def upstream_key_for(presented)

@@ -14,7 +14,7 @@ require "async"
 #
 # Both halves of that are asserted here rather than claimed in a comment.
 class ConcurrencyTest < Minitest::Test
-  SECRET_KEY = "fly_sk_eu_production_abc123"
+  SECRET_KEY = "fly_sk_production_abc123"
   EVENT_JSON = '{"request_id":"r1","visitor_id":"v1","occurred_at":"2026-01-02T03:04:05Z"}'
   DELAY = 0.3
   CALLS = 5

@@ -8,7 +8,7 @@ require "digest"
 # These are the tests that would fail if the server changed a field name or a
 # signing rule, rather than if this SDK changed its mind about one.
 class ContractTest < Minitest::Test
-  SECRET_KEY = "fly_sk_eu_production_contract"
+  SECRET_KEY = "fly_sk_production_contract"
 
   def test_snapshot_matches_its_manifest
     manifest = JSON.parse(File.read(File.join(Fixtures::DIR, "manifest.json")))

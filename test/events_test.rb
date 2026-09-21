@@ -3,7 +3,7 @@
 require "test_helper"
 
 class EventsTest < Minitest::Test
-  SECRET_KEY = "fly_sk_us_staging_abc123"
+  SECRET_KEY = "fly_sk_staging_abc123"
   EVENT_JSON = '{"request_id":"r1","visitor_id":"v1",' \
                '"occurred_at":"2026-01-02T03:04:05Z","extra":1}'
   EMPTY_PAGE = '{"rows":[],"page":1,"page_size":50}'

@@ -18,26 +18,24 @@ module Fingerly
 
     # Anchored with \A and \z rather than ^ and $, which in Ruby match at every
     # line boundary. A key with a newline in it would otherwise pass.
-    KEY = /\Afly_(pk|sk|px)_(eu|us)_(production|staging|development)_[A-Za-z0-9_-]+\z/
+    KEY = /\Afly_(pk|sk|px)_(production|staging|development)_[A-Za-z0-9_-]+\z/
     API_VERSION = /\Av[1-9][0-9]*\z/
 
     LABELS = { PUBLIC => "public", SECRET => "secret", PROXY => "proxy" }.freeze
 
-    # The region and environment a Fingerly key is scoped to.
-    Scope = Struct.new(:region, :environment) do
-      # @return [String] the Fingerly API origin serving this scope's region
-      def origin
-        "https://#{region}.api.fingerly.io"
-      end
-    end
+    # The one Fingerly API origin.
+    DEFAULT_ENDPOINT = "https://api.fingerly.io"
+
+    # The environment a Fingerly key is scoped to.
+    Scope = Struct.new(:environment)
 
     module_function
 
     # Parses a Fingerly key and asserts it is of the expected kind.
     #
-    # @param key [String, nil] the raw key, such as +fly_sk_us_production_…+
+    # @param key [String, nil] the raw key, such as +fly_sk_production_…+
     # @param expected [String] the kind the caller requires
-    # @return [Scope] the region and environment the key is scoped to
+    # @return [Scope] the environment the key is scoped to
     # @raise [ConfigurationError] if the key is malformed or of another kind,
     #   so a public, proxy or management key can never reach an API that would
     #   accept it
@@ -46,7 +44,7 @@ module Fingerly
       return scope if scope
 
       raise ConfigurationError,
-            "A valid regional Fingerly #{LABELS.fetch(expected)} key is required"
+            "A valid Fingerly #{LABELS.fetch(expected)} key is required"
     end
 
     # The same, without raising.
@@ -56,7 +54,7 @@ module Fingerly
       match = key.is_a?(String) ? KEY.match(key) : nil
       return nil unless match && match[1] == expected
 
-      Scope.new(match[2], match[3])
+      Scope.new(match[2])
     end
 
     # Validates a caller-supplied API origin.

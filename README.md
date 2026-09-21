@@ -17,8 +17,8 @@ event = fingerly.events.get(request_id)
 page = fingerly.events.list(level: "high", limit: 50)
 ```
 
-Event reads require `fly_sk_{eu|us}_{production|staging|development}_` keys.
-The key selects the regional endpoint; `endpoint:` overrides it for a local
+Event reads require `fly_sk_{production|staging|development}_` keys. Requests
+go to `https://api.fingerly.io`; `endpoint:` overrides that for a local
 API. Public, proxy, management, malformed and unsupported keys are rejected
 before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
@@ -206,8 +206,8 @@ application behind it. A wrong method on a path Fingerly owns gets `405`.
 Event reads need a secret key and stay unreachable from a browser by
 construction.
 
-The browser must present a public key from the same region and environment as
-the proxy key, or the request gets `401`. Bodies over 1 MiB get `413`,
+The browser must present a public key from the same environment as the proxy
+key, or the request gets `401`. Bodies over 1 MiB get `413`,
 enforced while reading rather than after buffering. Responses are marked
 `no-store`. Only the content type, the visitor metadata Fingerly needs, and an
 `Idempotency-Key` are forwarded; customer cookies and authorization headers

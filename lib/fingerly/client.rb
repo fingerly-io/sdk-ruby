@@ -25,10 +25,9 @@ module Fingerly
     attr_reader :events
 
     # @param secret_key [String] a server-only key,
-    #   +fly_sk_{eu|us}_{environment}_…+, whose prefix selects the regional API
-    #   and the environment read
-    # @param endpoint [String, nil] overrides the regional origin implied by
-    #   the key, for a local or self-hosted API
+    #   +fly_sk_{environment}_…+, whose prefix names the environment read
+    # @param endpoint [String, nil] overrides the Fingerly API origin, for a
+    #   local or self-hosted API
     # @param api_version [String] the API route version
     # @param timeout [Numeric] the deadline for each request in seconds,
     #   covering the response body
@@ -41,8 +40,8 @@ module Fingerly
                    timeout: DEFAULT_TIMEOUT, configure_http: nil)
       # The key is validated even when an endpoint is given, so a public, proxy
       # or management key can never reach an API that would accept it.
-      scope = Config.parse_key(secret_key, Config::SECRET)
-      origin = Config.normalize_endpoint(endpoint || scope.origin)
+      Config.parse_key(secret_key, Config::SECRET)
+      origin = Config.normalize_endpoint(endpoint || Config::DEFAULT_ENDPOINT)
 
       @secret_key = secret_key
       @base_path = "/api/#{Config.normalize_api_version(api_version)}"

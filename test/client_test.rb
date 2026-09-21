@@ -3,19 +3,18 @@
 require "test_helper"
 
 class ClientTest < Minitest::Test
-  SECRET_KEY = "fly_sk_eu_production_abc123"
+  SECRET_KEY = "fly_sk_production_abc123"
   EVENT_JSON = '{"request_id":"r1","visitor_id":"v1","occurred_at":"2026-01-02T03:04:05Z"}'
 
   NOT_SECRET_KEYS = [
     "",
     "nonsense",
-    "fly_pk_eu_production_abc",      # a browser key
-    "fly_px_eu_production_abc",      # a proxy key
-    "fly_mk_eu_production_abc",      # a management key
-    "fly_sk_ap_production_abc",      # an unknown region
-    "fly_sk_eu_sandbox_abc",         # an unknown environment
-    "fly_sk_eu_production_",         # no suffix
-    "fly_sk_eu_production_abc\n"     # a trailing newline
+    "fly_pk_production_abc",      # a browser key
+    "fly_px_production_abc",      # a proxy key
+    "fly_mk_production_abc",      # a management key
+    "fly_sk_sandbox_abc",         # an unknown environment
+    "fly_sk_production_",         # no suffix
+    "fly_sk_production_abc\n"     # a trailing newline
   ].freeze
 
   def test_refuses_every_key_that_is_not_a_secret_key
@@ -31,7 +30,7 @@ class ClientTest < Minitest::Test
     # Otherwise a local endpoint would be a way to smuggle a browser key into
     # an API that accepts one.
     assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Client.new(secret_key: "fly_pk_eu_production_abc", endpoint: "http://127.0.0.1:9")
+      Fingerly::Client.new(secret_key: "fly_pk_production_abc", endpoint: "http://127.0.0.1:9")
     end
   end
 

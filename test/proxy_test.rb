@@ -14,8 +14,8 @@ require "zlib"
 # there is no per-framework variant to test: Rack is the interface every Ruby
 # server and framework shares.
 class ProxyTest < Minitest::Test
-  PROXY_KEY = "fly_px_eu_production_proxy"
-  PUBLIC_KEY = "fly_pk_eu_production_browser"
+  PROXY_KEY = "fly_px_production_proxy"
+  PUBLIC_KEY = "fly_pk_production_browser"
   PREFIX = "/metrics"
   IDENTIFY = "#{PREFIX}/api/v1/identify".freeze
 
@@ -41,14 +41,14 @@ class ProxyTest < Minitest::Test
   def test_refuses_both_kinds_of_key_at_once
     assert_raises(Fingerly::ConfigurationError) do
       Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, secret_key: "fly_sk_eu_production_secret",
+        proxy_key: PROXY_KEY, secret_key: "fly_sk_production_secret",
         client_ip: ->(_r) { "203.0.113.7" }
       )
     end
   end
 
   def test_refuses_a_key_that_is_not_a_proxy_key
-    %w[fly_sk_eu_production_secret fly_pk_eu_production_browser nonsense].each do |key|
+    %w[fly_sk_production_secret fly_pk_production_browser nonsense].each do |key|
       assert_raises(Fingerly::ConfigurationError, "accepted #{key}") do
         Fingerly::Proxy.new(proxy_key: key, client_ip: ->(_r) { "203.0.113.7" })
       end
@@ -163,8 +163,8 @@ class ProxyTest < Minitest::Test
 
   def test_refuses_a_key_from_another_deployment
     presented = [
-      nil, "", "fly_sk_eu_production_secret", "fly_px_eu_production_proxy",
-      "fly_pk_us_production_browser", "fly_pk_eu_staging_browser", "nonsense"
+      nil, "", "fly_sk_production_secret", "fly_px_production_proxy",
+      "fly_pk_staging_browser", "nonsense"
     ]
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       presented.each do |key|
@@ -181,13 +181,13 @@ class ProxyTest < Minitest::Test
   def test_the_deprecated_secret_key_mode_authenticates_on_its_own
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
-        secret_key: "fly_sk_eu_production_secret", prefix: PREFIX,
+        secret_key: "fly_sk_production_secret", prefix: PREFIX,
         upstream: api.origin, client_ip: ->(_r) { "203.0.113.7" }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(IDENTIFY, input: "{}")
 
       assert_equal 200, response.status
-      assert_equal "fly_sk_eu_production_secret", api.requests.first.header("x-api-key")
+      assert_equal "fly_sk_production_secret", api.requests.first.header("x-api-key")
       assert_nil api.requests.first.header("x-fingerly-proxy-key")
     end
   end
