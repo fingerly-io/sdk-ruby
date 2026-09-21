@@ -2,7 +2,7 @@ plugins:
   - rubocop-minitest
 
 AllCops:
-  TargetRubyVersion: 3.1
+  TargetRubyVersion: 3.2
   NewCops: enable
   SuggestExtensions: false
   Exclude:
@@ -55,8 +55,9 @@ Style/Documentation:
 Style/KeywordParametersOrder:
   Enabled: false
 
-# Anonymous block forwarding landed in 3.1, which is the floor, and its edges
-# there are not worth finding out about from a user's backtrace.
+# Anonymous block forwarding landed in 3.1, one below the floor, and its edges
+# on the oldest versions that have it are not worth finding out about from a
+# user's backtrace.
 Naming/BlockForwarding:
   EnforcedStyle: explicit
 

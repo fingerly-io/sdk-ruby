@@ -17,8 +17,15 @@ Gem::Specification.new do |spec|
   TEXT
   spec.homepage = "https://docs.fingerly.io/docs/sdks/ruby"
 
-  # Ruby 3.1 is the floor the docs promise. Every newer release is tested too.
-  spec.required_ruby_version = ">= 3.1.0"
+  # Ruby 3.2 is the floor the docs promise. Every newer release is tested too.
+  #
+  # It is 3.2 rather than 3.1 because of the claim this gem is built on: one
+  # synchronous client is enough, since Net::HTTP yields to a fiber scheduler.
+  # `test/concurrency_test.rb` is the proof of that, and on 3.1 it does not
+  # hold — the scheduled calls never reach the server at all. A floor is a
+  # promise about behaviour, not a minimum that happens to parse, so it stops
+  # where the proof stops. 3.1 has been end-of-life since March 2025.
+  spec.required_ruby_version = ">= 3.2.0"
 
   spec.metadata = {
     "documentation_uri" => "https://docs.fingerly.io/docs/sdks/ruby",

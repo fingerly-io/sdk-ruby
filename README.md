@@ -24,7 +24,7 @@ before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
 and never retry.
 
-Ruby 3.1 or newer. No runtime dependencies: everything it needs is in the
+Ruby 3.2 or newer. No runtime dependencies: everything it needs is in the
 standard library. Rack is a contract rather than a dependency, so the proxy
 speaks it without loading it and cannot pin a version against your own.
 
