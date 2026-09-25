@@ -108,14 +108,16 @@ module Fingerly
       raise ConfigurationError, "#{name} must be a positive integer"
     end
 
-    # Validates the local mount path and drops trailing slashes.
-    def normalize_prefix(value)
-      prefix = value.to_s.sub(%r{/+\z}, "")
-      unless prefix.start_with?("/") && !prefix.match?(/[?#]/)
-        raise ConfigurationError, "prefix must be an absolute URL path"
+    # Validates the path the dashboard issued for a proxy and drops trailing
+    # slashes. It is matched exactly: the proxy answers that path and nothing
+    # under it.
+    def normalize_path(value)
+      path = value.to_s.strip.sub(%r{/+\z}, "")
+      unless path.start_with?("/") && path.length >= 2 && !path.match?(/[?#]/)
+        raise ConfigurationError, "path must be an absolute URL path such as /k7x2qm4a"
       end
 
-      prefix
+      path
     end
 
     # Whether a value is printable ASCII, so it cannot inject a header of its

@@ -56,8 +56,7 @@ module Fingerly
     end
   end
 
-  # Same-origin proxy for the browser SDK's identify and supplement calls, as
-  # Rack middleware.
+  # Same-origin proxy for the browser SDK, as a Rack application or middleware.
   #
   # Content blockers refuse browser requests to third-party APIs, and a refused
   # identification is a visitor never identified. Mounting this on a path of
@@ -71,41 +70,47 @@ module Fingerly
   #   # config/application.rb
   #   config.middleware.use Fingerly::Proxy,
   #     proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
-  #     prefix: "/metrics",
+  #     path: "/k7x2qm4a",
   #     client_ip: ->(request) { request.header("CF-Connecting-IP") }
   #
-  # Only identify and supplement are forwarded, never event reads: reading
-  # events needs a secret key and must stay unreachable from a browser.
-  # Customer cookies and authorization headers are never passed on.
+  # The browser SDK posts both of its calls to that one path, and each is
+  # forwarded to Fingerly's one ingest URL, never anywhere else and never to
+  # event reads. Customer cookies and authorization headers are never passed
+  # on, and nothing that names Fingerly is relayed back.
   class Proxy
-    DEFAULT_PREFIX = "/api/fingerly"
     DEFAULT_MAX_BODY_BYTES = 1 << 20
     DEFAULT_TIMEOUT = 5
     USER_AGENT = "fingerly-ruby/#{VERSION}".freeze
+    # What this proxy reports itself as upstream; shown per proxy in the
+    # dashboard.
+    PROXY_VERSION = "ruby/#{VERSION}".freeze
 
     # Statuses that must not carry a body.
     BODILESS = [204, 205, 304].freeze
 
-    # Upstream headers that describe that connection rather than our response.
-    # Net::HTTP has already decoded and reframed the body, so replaying them
-    # would misdescribe the bytes handed back. +set-cookie+ is dropped as well:
-    # the API sets none, and it is the one header whose values cannot be joined
-    # into the single string Rack 2 and Rack 3 both accept.
-    CONNECTION_HEADERS = %w[
-      connection content-encoding content-length keep-alive proxy-authenticate
-      proxy-authorization te trailer transfer-encoding upgrade set-cookie
+    # The response headers relayed to the browser, and nothing else. A content
+    # blocker can match a response header by name, so an allowlist is what
+    # keeps anything naming Fingerly off the page, whatever the API adds in
+    # future. It also leaves out every header that describes the upstream
+    # connection rather than the bytes handed back, and +set-cookie+, the one
+    # header whose values cannot be joined into the string Rack 2 and Rack 3
+    # both accept.
+    RELAYED_HEADERS = %w[
+      content-type x-request-id ratelimit-limit ratelimit-remaining retry-after
     ].freeze
 
     # @return [Integer] the request body limit in bytes
     attr_reader :max_body_bytes
-    # @return [String] the path the proxy answers under, without a trailing slash
-    attr_reader :prefix
-    # @return [String] the API route version accepted locally and forwarded upstream
+    # @return [String, nil] the one path answered, without a trailing slash, or
+    #   nil to answer whatever the framework routes here
+    attr_reader :path
+    # @return [String] the API route version forwarded upstream
     attr_reader :api_version
 
     # @param app [#call, nil] the rest of the Rack stack. Rack passes this
-    #   when the proxy is used as middleware; without one, a path the proxy
-    #   does not serve gets 404.
+    #   when the proxy is used as middleware, which then needs +path+ to know
+    #   which request is its own; without one, a path the proxy does not serve
+    #   gets 404.
     # @param client_ip [#call] resolves the visitor's address from a
     #   {ProxyRequest}. Read it from a header your own infrastructure sets,
     #   such as your load balancer's or CDN's. Never use the left-most
@@ -115,17 +120,20 @@ module Fingerly
     # @param secret_key [String, nil] the deprecated alternative to
     #   +proxy_key+. Secret read keys will be refused in the next major
     #   version; do not pass both.
-    # @param prefix [String] the path the proxy is mounted under
-    # @param api_version [String] the version accepted locally and forwarded
+    # @param path [String, nil] the path the dashboard issued for this proxy,
+    #   such as +/k7x2qm4a+, matched exactly. Omit it only where the framework
+    #   already routes that path here, as a Rails +mount+ or a +Rack::URLMap+
+    #   entry does; the proxy then answers whatever it is handed.
+    # @param api_version [String] the version of the upstream ingest URL
     # @param upstream [String, nil] overrides the API origin implied by the key
     # @param max_body_bytes [Integer] larger request bodies are refused with 413
     # @param timeout [Numeric] how long to wait for Fingerly, in seconds
     # @param configure_http [Proc, nil] receives the +Net::HTTP+ before it connects
-    # @raise [ConfigurationError] if a credential, route, limit or callback is
-    #   invalid. A proxy is wired up once at start-up, where an error is
-    #   natural to handle.
+    # @raise [ConfigurationError] if a credential, path, limit or callback is
+    #   invalid, or if the proxy is middleware without a path. A proxy is wired
+    #   up once at start-up, where an error is natural to handle.
     def initialize(app = nil, client_ip:, proxy_key: nil, secret_key: nil,
-                   prefix: DEFAULT_PREFIX, api_version: "v1", upstream: nil,
+                   path: nil, api_version: "v1", upstream: nil,
                    max_body_bytes: DEFAULT_MAX_BODY_BYTES, timeout: DEFAULT_TIMEOUT,
                    configure_http: nil)
       raise ConfigurationError, "A Fingerly proxy key is required" if !proxy_key && !secret_key
@@ -133,14 +141,18 @@ module Fingerly
         raise ConfigurationError, "Pass proxy_key or deprecated secret_key, not both"
       end
       raise ConfigurationError, "client_ip is required" unless client_ip.respond_to?(:call)
+      # Middleware sees every request in the stack. Without a path it would
+      # take all of them from the application behind it.
+      raise ConfigurationError, "path is required when the proxy is middleware" if app && !path
 
       @app = app
       @client_ip = client_ip
       @uses_proxy_key = !proxy_key.nil?
       @key = proxy_key || secret_key
       @scope = Config.parse_key(@key, @uses_proxy_key ? Config::PROXY : Config::SECRET)
-      @prefix = Config.normalize_prefix(prefix)
+      @path = path.nil? ? nil : Config.normalize_path(path)
       @api_version = Config.normalize_api_version(api_version)
+      @ingest = "/api/#{@api_version}/ingest".freeze
       @max_body_bytes = Config.positive_int(max_body_bytes, "max_body_bytes")
       @transport = Transport.new(
         origin: Config.normalize_endpoint(upstream || Config::DEFAULT_ENDPOINT),
@@ -157,10 +169,13 @@ module Fingerly
     # and under Rack 3 that stream is not required to rewind, so the
     # application it passed the request along to would receive nothing.
     #
+    # Trailing slashes are ignored on both sides. Without a configured +path+
+    # every request is the proxy's, because the framework routed it here.
+    #
     # @param path [String] the request path
     # @return [Boolean]
     def handles?(path)
-      !route_for(path.to_s).nil?
+      @path.nil? || path.to_s.sub(%r{/+\z}, "") == @path
     end
 
     # Serves one Rack request.
@@ -168,11 +183,10 @@ module Fingerly
     # @param env [Hash] the Rack environment
     # @return [Array(Integer, Hash, Array<String>)] a Rack response
     def call(env)
-      # PATH_INFO alone, never SCRIPT_NAME + PATH_INFO. Rack puts a mount into
-      # SCRIPT_NAME, so under `map "/metrics"` the prefix is already stripped,
-      # while under a sub-URI deployment SCRIPT_NAME is a detail the configured
-      # prefix knows nothing about. The application-relative path is the only
-      # one that means the same thing in both.
+      # PATH_INFO alone, never SCRIPT_NAME + PATH_INFO. Under a sub-URI
+      # deployment SCRIPT_NAME is a detail the configured path knows nothing
+      # about, so the application-relative path is the one that means the
+      # same thing wherever the application is deployed.
       path = env["PATH_INFO"].to_s
       return pass(env) unless handles?(path)
 
@@ -205,37 +219,12 @@ module Fingerly
       headers = upstream_headers(request, api_key)
       return refuse(500, "Internal Server Error") if headers.nil?
 
-      result = @transport.call(Net::HTTP::Post, route_for(request.path), headers, body)
+      # Both of the browser SDK's calls go to the one ingest URL, which tells
+      # them apart by their bodies.
+      result = @transport.call(Net::HTTP::Post, @ingest, headers, body)
       relay(result)
     rescue TimeoutError, ConnectionError
       refuse(502, "Bad Gateway")
-    end
-
-    # Maps a local request path to its upstream path.
-    #
-    # The prefix is tolerated as either present or already stripped, so the
-    # middleware works whether Rack reported the whole path or only what
-    # followed the mount.
-    #
-    # @return [String, nil] the upstream path, or nil when not proxyable
-    def route_for(path)
-      versioned = "/api/#{@api_version}"
-      resource =
-        if path.start_with?(@prefix + versioned) then path.delete_prefix(@prefix + versioned)
-        elsif path.start_with?(versioned) then path.delete_prefix(versioned)
-        end
-      return nil if resource.nil?
-      return nil unless resource == "/identify" || supplement?(resource)
-
-      versioned + resource
-    end
-
-    # True for /events/{request_id}/supplement with exactly one id segment.
-    def supplement?(resource)
-      return false unless resource.start_with?("/events/") && resource.end_with?("/supplement")
-
-      request_id = resource.delete_prefix("/events/").delete_suffix("/supplement")
-      !request_id.empty? && !request_id.include?("/")
     end
 
     # Decides which key to present upstream.
@@ -274,6 +263,7 @@ module Fingerly
         "x-fingerly-client-ip" => address,
         "x-fingerly-origin" => safe(request.header("origin")).to_s,
         "x-fingerly-user-agent" => safe(request.header("user-agent")).to_s,
+        "x-fingerly-proxy-version" => PROXY_VERSION,
         "user-agent" => USER_AGENT
       }
       headers["x-fingerly-proxy-key"] = @key if @uses_proxy_key
@@ -287,20 +277,18 @@ module Fingerly
       Config.header_safe?(value) ? value : nil
     end
 
-    # Returns the upstream response, uncacheable and without its framing.
+    # Returns the upstream response, uncacheable and with only the allowlisted
+    # headers.
     #
-    # Header names are lowercased and repeats joined with ", ", which is the
+    # Header names are lowercase and repeats joined with ", ", which is the
     # one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name
     # outright, and Rack 2 refuses the array Rack 3 would rather have.
     def relay(result)
-      headers = {}
+      headers = { "cache-control" => "no-store" }
       result.headers.each do |name, values|
         key = name.downcase
-        next if CONNECTION_HEADERS.include?(key) || key == "cache-control"
-
-        headers[key] = Array(values).join(", ")
+        headers[key] = Array(values).join(", ") if RELAYED_HEADERS.include?(key)
       end
-      headers["cache-control"] = "no-store"
 
       body = BODILESS.include?(result.status) ? "" : result.body
       [result.status, headers, [body]]

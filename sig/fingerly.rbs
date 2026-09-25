@@ -165,15 +165,15 @@ module Fingerly
   end
 
   class Proxy
-    DEFAULT_PREFIX: String
     DEFAULT_MAX_BODY_BYTES: Integer
     DEFAULT_TIMEOUT: Integer
     USER_AGENT: String
+    PROXY_VERSION: String
     BODILESS: Array[Integer]
-    CONNECTION_HEADERS: Array[String]
+    RELAYED_HEADERS: Array[String]
 
     attr_reader max_body_bytes: Integer
-    attr_reader prefix: String
+    attr_reader path: String?
     attr_reader api_version: String
 
     def initialize: (
@@ -181,7 +181,7 @@ module Fingerly
       client_ip: ^(ProxyRequest) -> String?,
       ?proxy_key: String?,
       ?secret_key: String?,
-      ?prefix: String,
+      ?path: String?,
       ?api_version: String,
       ?upstream: String?,
       ?max_body_bytes: Integer,

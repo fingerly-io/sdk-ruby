@@ -167,14 +167,16 @@ your own site and those requests become first-party. The proxy key is what
 lets that hop declare the visitor's real address, origin and user agent; a
 public key alone never can, so nobody can spoof them.
 
-Rack is the one interface every Ruby server and framework shares, so there is
-one middleware and no per-framework variants.
+Create a proxy in the dashboard (**Integration > Proxy keys**). It issues a
+path such as `/k7x2qm4a`, and the proxy answers that one path. Rack is the one
+interface every Ruby server and framework shares, so there is one middleware
+and no per-framework variants.
 
 ```ruby
 # config/application.rb
 config.middleware.use Fingerly::Proxy,
   proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
-  prefix: "/metrics",
+  path: "/k7x2qm4a",
   client_ip: ->(request) { request.header("CF-Connecting-IP") }
 ```
 
@@ -182,7 +184,7 @@ config.middleware.use Fingerly::Proxy,
 # config.ru, for Sinatra, Hanami or a bare Rack app
 use Fingerly::Proxy,
     proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
-    prefix: "/metrics",
+    path: "/k7x2qm4a",
     client_ip: ->(request) { request.header("CF-Connecting-IP") }
 run MyApp
 ```
@@ -191,27 +193,54 @@ Put it early, ahead of authentication: the browser SDK sends no cookies and
 carries no user, and a filter that redirected it to a sign-in page would break
 identification for every signed-out visitor.
 
-Then point the browser SDK at the same path:
+Then point the browser SDK at the same path. Both of its calls go there, with
+nothing appended:
 
 ```ts
-const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/metrics' })
+const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
+
+`path` is optional where the framework already routes the path to the proxy,
+as a Rails `mount` or a `Rack::URLMap` entry does. Omit it there: the mount has
+already moved the path into `SCRIPT_NAME`, and the proxy answers whatever the
+mount hands it.
+
+```ruby
+# config/routes.rb
+mount Fingerly::Proxy.new(
+  proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
+  client_ip: ->(request) { request.header("CF-Connecting-IP") }
+) => "/k7x2qm4a"
+```
+
+As middleware it sees every request in the stack, so there `path` is required
+and its absence is a `ConfigurationError` at start-up.
 
 ### What the proxy does
 
-It forwards only `POST` to `{prefix}/api/v1/identify` and
-`{prefix}/api/v1/events/{request_id}/supplement`. Anything else is passed
-along to your application, or answered `404` when the proxy is mounted with no
-application behind it. A wrong method on a path Fingerly owns gets `405`.
-Event reads need a secret key and stay unreachable from a browser by
-construction.
+It answers only the configured path, matched exactly with trailing slashes
+ignored, so `/k7x2qm4a/admin` is not its own. Anything else is passed along to
+your application, or answered `404` when the proxy has no application behind
+it. On its own path, anything but `POST` gets `405`. Every request it accepts
+goes to one URL, `https://api.fingerly.io/api/v1/ingest`, which tells the
+identification from the report that follows it by the body. Nothing else is
+reachable through it, event reads included: they need a secret key and stay
+unreachable from a browser by construction. `api_version:` changes only the
+version in that URL.
 
 The browser must present a public key from the same environment as the proxy
 key, or the request gets `401`. Bodies over 1 MiB get `413`,
-enforced while reading rather than after buffering. Responses are marked
-`no-store`. Only the content type, the visitor metadata Fingerly needs, and an
-`Idempotency-Key` are forwarded; customer cookies and authorization headers
-never are.
+enforced while reading rather than after buffering. Only the content type, the
+visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
+customer cookies and authorization headers never are. The proxy reports itself
+upstream as `ruby/0.1.0` in `x-fingerly-proxy-version`, which the dashboard
+shows per proxy.
+
+Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining`
+and `retry-after` are relayed back, plus `cache-control: no-store` set by the
+proxy. A content blocker can match a response header by name, and an
+allowlist keeps anything that names Fingerly off the response, whatever the
+API adds later.
 
 The middleware decides from the path alone before it reads anything. It sees
 every request in the stack, and reading the body to find out whether one
@@ -219,18 +248,15 @@ belongs to Fingerly would have consumed it: under Rack 3 `rack.input` is not
 required to rewind, so your application would receive an empty request rather
 than an error.
 
-`prefix` is the path within your application. It excludes anything a sub-URI
+`path` is the path within your application. It excludes anything a sub-URI
 deployment puts in `SCRIPT_NAME`, because the proxy matches `PATH_INFO`, which
-means the same thing in every mount. A prefix that `Rack::URLMap` has already
-stripped works too: the path is accepted as either carrying the prefix or
-having had it removed. Choose a neutral one. Blockers look for words such as
-`fingerprint`, `tracking` and `fingerly`.
+means the same thing wherever the application is deployed. Use the one the
+dashboard issued rather than inventing one: blockers look for words such as
+`fingerprint`, `tracking` and `analytics` in a path.
 
-Relayed headers are lowercased and repeats joined with `", "`, which is the
+Relayed headers are lowercase and repeats joined with `", "`, which is the
 one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name
-outright, and Rack 2 refuses the array Rack 3 would rather have. `set-cookie`
-is dropped rather than joined, since it is the one header where joining is
-wrong and the API sets none.
+outright, and Rack 2 refuses the array Rack 3 would rather have.
 
 > **`client_ip` is the one thing you must get right.** Resolve it from a
 > header your own infrastructure sets, such as your load balancer's or CDN's.

@@ -16,8 +16,7 @@ require "zlib"
 class ProxyTest < Minitest::Test
   PROXY_KEY = "fly_px_production_proxy"
   PUBLIC_KEY = "fly_pk_production_browser"
-  PREFIX = "/metrics"
-  IDENTIFY = "#{PREFIX}/api/v1/identify".freeze
+  PATH = "/k7x2qm4a"
 
   # Written as escapes so the intent survives a copy and paste: a carriage
   # return and a line feed, then a header of the attacker's choosing.
@@ -55,13 +54,31 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  def test_refuses_a_prefix_that_is_not_a_path
-    ["metrics", "/metrics?x=1", "/metrics#x"].each do |prefix|
-      assert_raises(Fingerly::ConfigurationError, "accepted #{prefix}") do
+  def test_refuses_a_path_that_is_not_a_path
+    ["k7x2qm4a", "/k7x2qm4a?x=1", "/k7x2qm4a#x", "/", "///", "", " "].each do |path|
+      assert_raises(Fingerly::ConfigurationError, "accepted #{path.inspect}") do
         Fingerly::Proxy.new(
-          proxy_key: PROXY_KEY, prefix: prefix, client_ip: ->(_r) { "203.0.113.7" }
+          proxy_key: PROXY_KEY, path: path, client_ip: ->(_r) { "203.0.113.7" }
         )
       end
+    end
+  end
+
+  def test_normalises_the_path_it_is_given
+    proxy = Fingerly::Proxy.new(
+      proxy_key: PROXY_KEY, path: " /k7x2qm4a// ", client_ip: ->(_r) { "203.0.113.7" }
+    )
+
+    assert_equal PATH, proxy.path
+  end
+
+  # Middleware sees every request in the stack, so without a path it would
+  # take the application's own routes from it.
+  def test_refuses_to_be_middleware_without_a_path
+    assert_raises(Fingerly::ConfigurationError) do
+      Fingerly::Proxy.new(
+        ->(_env) { [200, {}, []] }, proxy_key: PROXY_KEY, client_ip: ->(_r) { "203.0.113.7" }
+      )
     end
   end
 
@@ -76,20 +93,20 @@ class ProxyTest < Minitest::Test
   end
 
   ROUTES = {
-    "#{PREFIX}/api/v1/identify" => true,
-    "/api/v1/identify" => true,                        # already stripped
-    "#{PREFIX}/api/v1/events/abc/supplement" => true,
-    "/api/v1/events/abc/supplement" => true,
-    "#{PREFIX}/api/v1/events/abc" => false,            # a read
-    "#{PREFIX}/api/v1/events" => false,
-    "#{PREFIX}/api/v1/events//supplement" => false,    # no id
-    "#{PREFIX}/api/v1/events/a/b/supplement" => false, # two segments
-    "#{PREFIX}/api/v2/identify" => false,              # another version
-    "/identify" => false,
-    "#{PREFIX}/api/v1/identify/extra" => false
+    PATH => true,
+    "#{PATH}/" => true,                      # trailing slashes are ignored
+    "#{PATH}//" => true,
+    "#{PATH}/admin" => false,                # matched exactly, nothing under it
+    "#{PATH}x" => false,
+    "/k7x2qm4" => false,
+    "/other" => false,
+    "/" => false,
+    "" => false,
+    "/api/v1/identify" => false,             # the old routes are gone
+    "/api/v1/events/abc/supplement" => false
   }.freeze
 
-  def test_recognises_only_the_two_proxyable_routes
+  def test_recognises_only_the_configured_path
     proxy = build("http://127.0.0.1:9")
 
     ROUTES.each do |path, handled|
@@ -97,10 +114,18 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  def test_forwards_identify_with_the_visitor_metadata
+  def test_recognises_every_path_without_one_configured
+    proxy = build("http://127.0.0.1:9", path: nil)
+
+    [PATH, "/other", "/", ""].each do |path|
+      assert proxy.handles?(path), "refused #{path.inspect}"
+    end
+  end
+
+  def test_forwards_an_identification_with_the_visitor_metadata
     FakeAPI.run(FakeAPI.json(200, '{"visitor_id":"v1"}')) do |api|
       response = post(
-        api, IDENTIFY, '{"payload":1}',
+        api, PATH, '{"payload":1}',
         "HTTP_X_API_KEY" => PUBLIC_KEY,
         "HTTP_ORIGIN" => "https://shop.example",
         "HTTP_USER_AGENT" => "Mozilla/5.0",
@@ -113,7 +138,7 @@ class ProxyTest < Minitest::Test
       sent = api.requests.first
 
       assert_equal "POST", sent.request_method
-      assert_equal "/api/v1/identify", sent.path
+      assert_equal "/api/v1/ingest", sent.path
       assert_equal '{"payload":1}', sent.body
 
       # The browser's public key travels on, alongside the proxy's own.
@@ -124,6 +149,7 @@ class ProxyTest < Minitest::Test
       assert_equal "Mozilla/5.0", sent.header("x-fingerly-user-agent")
       assert_equal "idem-1", sent.header("idempotency-key")
       assert_equal "fingerly-ruby/#{Fingerly::VERSION}", sent.header("user-agent")
+      assert_equal "ruby/#{Fingerly::VERSION}", sent.header("x-fingerly-proxy-version")
 
       # The customer's own credentials never leave their domain.
       assert_nil sent.header("cookie")
@@ -131,20 +157,35 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  def test_forwards_supplement
-    FakeAPI.run(FakeAPI.json(202, "{}")) do |api|
-      response = post(
-        api, "#{PREFIX}/api/v1/events/abc/supplement", "{}", "HTTP_X_API_KEY" => PUBLIC_KEY
-      )
+  # The deferred report goes to the same path and the same upstream URL; the
+  # API tells it from an identification by its body.
+  def test_forwards_the_deferred_report_to_the_same_url
+    FakeAPI.run(FakeAPI.json(202, '{"request_id":"r1","duplicate":false}')) do |api|
+      response = post(api, PATH, '{"token":"t1"}', "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 202, response.status
-      assert_equal "/api/v1/events/abc/supplement", api.requests.first.path
+      assert_equal "/api/v1/ingest", api.requests.first.path
+      assert_equal '{"token":"t1"}', api.requests.first.body
+    end
+  end
+
+  def test_forwards_to_the_configured_versions_ingest_url
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      proxy = Fingerly::Proxy.new(
+        proxy_key: PROXY_KEY, path: PATH, api_version: "v2", upstream: api.origin,
+        client_ip: ->(_r) { "203.0.113.7" }
+      )
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
+                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+
+      assert_equal 200, response.status
+      assert_equal "/api/v2/ingest", api.requests.first.path
     end
   end
 
   def test_refuses_anything_but_post
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      response = request(api).get(IDENTIFY, "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = request(api).get(PATH, "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 405, response.status
       assert_equal "POST", response.headers["allow"]
@@ -152,11 +193,15 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  def test_refuses_an_event_read
+  # The path is checked before the method, so a wrong method elsewhere is not
+  # told that this path exists.
+  def test_refuses_another_path_before_the_method
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      response = post(api, "#{PREFIX}/api/v1/events/abc", "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      ["#{PATH}/admin", "/other", "/api/v1/events/abc"].each do |path|
+        assert_equal 404, post(api, path, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY).status, path
+        assert_equal 404, request(api).get(path).status, path
+      end
 
-      assert_equal 404, response.status
       assert_empty api.requests
     end
   end
@@ -169,7 +214,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       presented.each do |key|
         env = key.nil? ? {} : { "HTTP_X_API_KEY" => key }
-        response = post(api, IDENTIFY, "{}", **env)
+        response = post(api, PATH, "{}", **env)
 
         assert_equal 401, response.status, "accepted #{key.inspect}"
       end
@@ -181,10 +226,10 @@ class ProxyTest < Minitest::Test
   def test_the_deprecated_secret_key_mode_authenticates_on_its_own
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
-        secret_key: "fly_sk_production_secret", prefix: PREFIX,
+        secret_key: "fly_sk_production_secret", path: PATH,
         upstream: api.origin, client_ip: ->(_r) { "203.0.113.7" }
       )
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(IDENTIFY, input: "{}")
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(PATH, input: "{}")
 
       assert_equal 200, response.status
       assert_equal "fly_sk_production_secret", api.requests.first.header("x-api-key")
@@ -194,7 +239,7 @@ class ProxyTest < Minitest::Test
 
   def test_refuses_a_declared_body_over_the_limit
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      response = post(api, IDENTIFY, "a" * 4096, max: 32, "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = post(api, PATH, "a" * 4096, max: 32, "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 413, response.status
       assert_empty api.requests
@@ -205,8 +250,8 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       # No declared length, so only reading can tell.
       env = Rack::MockRequest.env_for(
-        IDENTIFY, method: "POST", input: StringIO.new("a" * 4096),
-                  "HTTP_X_API_KEY" => PUBLIC_KEY
+        PATH, method: "POST", input: StringIO.new("a" * 4096),
+              "HTTP_X_API_KEY" => PUBLIC_KEY
       )
       env.delete("CONTENT_LENGTH")
       status, = build(api.origin, max_body_bytes: 32).call(env)
@@ -219,11 +264,11 @@ class ProxyTest < Minitest::Test
   def test_refuses_a_client_ip_that_could_inject_a_header
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, prefix: PREFIX, upstream: api.origin,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
         client_ip: ->(_r) { INJECTED_IP }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(IDENTIFY, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 500, response.status
       assert_empty api.requests
@@ -233,7 +278,7 @@ class ProxyTest < Minitest::Test
   def test_drops_a_visitor_supplied_header_that_could_not_be_repeated
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       response = post(
-        api, IDENTIFY, "{}",
+        api, PATH, "{}",
         "HTTP_X_API_KEY" => PUBLIC_KEY,
         "CONTENT_TYPE" => UNPRINTABLE_CONTENT_TYPE,
         "HTTP_ORIGIN" => UNPRINTABLE_ORIGIN
@@ -250,22 +295,55 @@ class ProxyTest < Minitest::Test
       res.status = 201
       res["content-type"] = "application/json"
       res["cache-control"] = "public, max-age=600"
-      res["x-fingerly-trace"] = "trace-1"
       res.body = '{"visitor_id":"v1"}'
     end
     FakeAPI.run(handler) do |api|
-      response = post(api, IDENTIFY, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = post(api, PATH, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 201, response.status
       assert_equal '{"visitor_id":"v1"}', response.body
+      assert_equal "application/json", response.headers["content-type"]
       assert_equal "no-store", response.headers["cache-control"]
-      assert_equal "trace-1", response.headers["x-fingerly-trace"]
       assert_nil response.headers["transfer-encoding"]
     end
   end
 
+  # A content blocker can match a response header by name, so only the
+  # allowlist is relayed, whatever else the API sends.
+  def test_relays_only_the_allowlisted_headers
+    handler = lambda do |_req, res|
+      res.status = 429
+      res["content-type"] = "application/json"
+      res["x-request-id"] = "one"
+      res["ratelimit-limit"] = "100"
+      res["ratelimit-remaining"] = "0"
+      res["retry-after"] = "7"
+      res["fingerly-balance-micros"] = "100"
+      res["x-fingerly-trace"] = "trace-1"
+      res["set-cookie"] = "a=b"
+      res["vary"] = "origin"
+      res.body = "{}"
+    end
+    FakeAPI.run(handler) do |api|
+      response = post(api, PATH, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+
+      assert_equal 429, response.status
+      relayed = response.headers.to_h.transform_keys(&:downcase)
+
+      assert_equal(
+        {
+          "content-type" => "application/json", "x-request-id" => "one",
+          "ratelimit-limit" => "100", "ratelimit-remaining" => "0", "retry-after" => "7",
+          "cache-control" => "no-store"
+        },
+        relayed.except("content-length")
+      )
+      refute relayed.any? { |name, value| "#{name} #{value}".match?(/fingerly/i) }, relayed
+    end
+  end
+
   # A relayed body must be described by the headers that go with it. Net::HTTP
-  # decodes a compressed response and drops the header itself; the strip list
+  # decodes a compressed response and drops the header itself; the allowlist
   # keeps that true for anything it does not.
   def test_does_not_repeat_the_upstream_content_encoding
     answer = '{"visitor_id":"v1"}'
@@ -281,7 +359,7 @@ class ProxyTest < Minitest::Test
       res.body = compressed.string
     end
     FakeAPI.run(handler) do |api|
-      response = post(api, IDENTIFY, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = post(api, PATH, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_nil response.headers["content-encoding"]
       assert_equal answer, response.body
@@ -290,7 +368,7 @@ class ProxyTest < Minitest::Test
 
   def test_relays_a_bodiless_status_with_no_body
     FakeAPI.run(->(_req, res) { res.status = 204 }) do |api|
-      response = post(api, IDENTIFY, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = post(api, PATH, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 204, response.status
       assert_equal "", response.body
@@ -300,7 +378,7 @@ class ProxyTest < Minitest::Test
   def test_answers_bad_gateway_when_fingerly_cannot_be_reached
     proxy = build("http://127.0.0.1:9")
     response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                .post(IDENTIFY, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+                                .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
     assert_equal 502, response.status
   end
@@ -312,11 +390,11 @@ class ProxyTest < Minitest::Test
     end
     FakeAPI.run(handler) do |api|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, prefix: PREFIX, upstream: api.origin, timeout: 0.3,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, timeout: 0.3,
         client_ip: ->(_r) { "203.0.113.7" }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(IDENTIFY, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 502, response.status
     end
@@ -347,48 +425,47 @@ class ProxyTest < Minitest::Test
     assert_equal 404, response.status
   end
 
-  # Rack::URLMap moves the mount into SCRIPT_NAME, so by the time the
-  # middleware runs the prefix is already gone. The proxy accepts the path
-  # either way for exactly this.
-  def test_works_when_a_mount_already_stripped_the_prefix
+  # Rack::URLMap, like a Rails mount, routes the path here and moves it into
+  # SCRIPT_NAME, so the proxy takes no path of its own.
+  def test_answers_where_a_mount_routes_it_without_a_path
     FakeAPI.run(FakeAPI.json(200, '{"visitor_id":"v1"}')) do |api|
-      mapped = Rack::URLMap.new(PREFIX => build(api.origin))
+      mapped = Rack::URLMap.new(PATH => build(api.origin, path: nil))
       response = Rack::MockRequest.new(Rack::Lint.new(mapped))
-                                  .post(IDENTIFY, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal 200, response.status
-      assert_equal "/api/v1/identify", api.requests.first.path
+      assert_equal "/api/v1/ingest", api.requests.first.path
     end
   end
 
-  # A sub-URI deployment is a detail the configured prefix knows nothing
+  # A sub-URI deployment is a detail the configured path knows nothing
   # about. Matching on PATH_INFO rather than SCRIPT_NAME + PATH_INFO is what
   # keeps the same configuration working in both places.
   def test_works_under_a_sub_uri_deployment
     FakeAPI.run(FakeAPI.json(200, '{"visitor_id":"v1"}')) do |api|
       env = Rack::MockRequest.env_for(
-        "/shop#{IDENTIFY}", method: "POST", input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY
+        "/shop#{PATH}", method: "POST", input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY
       )
       env["SCRIPT_NAME"] = "/shop"
-      env["PATH_INFO"] = IDENTIFY
+      env["PATH_INFO"] = PATH
       status, = build(api.origin).call(env)
 
       assert_equal 200, status
-      assert_equal "/api/v1/identify", api.requests.first.path
+      assert_equal "/api/v1/ingest", api.requests.first.path
     end
   end
 
   def test_reads_the_visitor_address_from_the_header_the_customer_names
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, prefix: PREFIX, upstream: api.origin,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
         client_ip: ->(request) { request.header("CF-Connecting-IP") }
       )
       Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
-        IDENTIFY, input: "{}",
-                  "HTTP_X_API_KEY" => PUBLIC_KEY,
-                  "HTTP_CF_CONNECTING_IP" => "198.51.100.9",
-                  "HTTP_X_FORWARDED_FOR" => "10.0.0.1, 198.51.100.9"
+        PATH, input: "{}",
+              "HTTP_X_API_KEY" => PUBLIC_KEY,
+              "HTTP_CF_CONNECTING_IP" => "198.51.100.9",
+              "HTTP_X_FORWARDED_FOR" => "10.0.0.1, 198.51.100.9"
       )
 
       assert_equal "198.51.100.9", api.requests.first.header("x-fingerly-client-ip")
@@ -399,17 +476,17 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       seen = nil
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, prefix: PREFIX, upstream: api.origin,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
         client_ip: lambda { |request|
           seen = request
           request.peer_host
         }
       )
       Rack::MockRequest.new(Rack::Lint.new(proxy))
-                       .post(IDENTIFY, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+                       .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
       assert_equal "POST", seen.request_method
-      assert_equal IDENTIFY, seen.path
+      assert_equal PATH, seen.path
       assert_equal PUBLIC_KEY, seen.header("x-api-key")
       assert_predicate seen.headers, :frozen?
     end
@@ -417,10 +494,10 @@ class ProxyTest < Minitest::Test
 
   private
 
-  def build(upstream, app: nil, max_body_bytes: 1 << 20)
+  def build(upstream, app: nil, path: PATH, max_body_bytes: 1 << 20)
     Fingerly::Proxy.new(
       app,
-      proxy_key: PROXY_KEY, prefix: PREFIX, upstream: upstream,
+      proxy_key: PROXY_KEY, path: path, upstream: upstream,
       max_body_bytes: max_body_bytes, client_ip: ->(_r) { "203.0.113.7" }
     )
   end
