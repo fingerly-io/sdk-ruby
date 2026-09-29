@@ -36,7 +36,8 @@ Gem::Specification.new do |spec|
     "allowed_push_host" => "https://rubygems.invalid"
   }
 
-  spec.files = Dir["lib/**/*.rb", "sig/**/*.rbs", "README.md"]
+  spec.license = "Apache-2.0"
+  spec.files = Dir["lib/**/*.rb", "sig/**/*.rbs", "README.md", "LICENSE"]
   spec.require_paths = ["lib"]
 
   # Everything it needs is in the standard library: net/http, json, openssl
