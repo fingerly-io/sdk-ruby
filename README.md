@@ -26,10 +26,11 @@ before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
 and never retry.
 
-Requires Ruby 3.2+, which is what the gemspec declares. On 3.1 `Net::HTTP`
-does not cooperate with a fiber scheduler, so the claim below would not hold.
-No runtime dependencies: everything it needs is in the standard library. Rack is a contract rather than a dependency, so the proxy
-speaks it without loading it and cannot pin a version against your own.
+Requires Ruby 3.2+, which is what the gemspec declares, and fiber-scheduler
+support below needs nothing newer. No runtime dependencies: everything it
+needs is in the standard library. Rack is a contract rather than a
+dependency, so the proxy speaks it without loading it and cannot pin a version
+against your own.
 
 ## There is no asynchronous client, and none is needed
 
@@ -38,12 +39,12 @@ standards, and a blocking call inside FastAPI stalls its event loop. Ruby has
 one server interface, Rack, and every framework on it calls your application
 synchronously.
 
-The stack that is not thread-per-request is covered anyway. `Net::HTTP` has
-honoured the fiber scheduler since Ruby 3.0, so under Falcon or the `async`
-gem the blocking reads in this SDK yield to the scheduler rather than holding
-the thread. Concurrent calls overlap without a second API to choose between,
-and there are tests asserting exactly that under both a fiber scheduler and
-plain threads.
+The stack that is not thread-per-request is covered anyway. On Ruby 3.2+,
+the floor this gem requires, `Net::HTTP` yields to a fiber scheduler, so under
+Falcon or the `async` gem the blocking reads in this SDK hand the thread back
+to the scheduler rather than holding it. Concurrent calls overlap without a
+second API to choose between, and there are tests asserting exactly that under
+both a fiber scheduler and plain threads.
 
 Where there is no fiber scheduler, a call holds its thread until it answers,
 for at most `timeout:`. That is what Puma and Unicorn expect. Do not call the

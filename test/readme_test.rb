@@ -33,6 +33,12 @@ class ReadmeTest < Minitest::Test
     assert_includes README, "Ruby 3.2+"
   end
 
+  # The fiber-scheduler promise rests on the same floor; naming an older Ruby
+  # for it would contradict the line above.
+  def test_the_readme_names_no_ruby_below_the_floor
+    refute_match(/Ruby 3\.[01]\b|\b3\.[01]\+?\s/, README)
+  end
+
   def test_the_versions_agree
     changelog = File.read(File.join(ROOT, "CHANGELOG.md"))
 
