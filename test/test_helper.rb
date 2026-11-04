@@ -191,9 +191,11 @@ class RawServer
     @thread = Thread.new do
       loop do
         client = @server.accept
-        head = +""
-        head << client.readpartial(4096) until head.include?("\r\n\r\n")
+        read_request(client)
         client.write(response)
+        # Half-close first: closing with unread input would reset the
+        # connection and throw away what was still in flight.
+        client.close_write
         client.close
       end
     rescue IOError, SystemCallError
@@ -215,5 +217,15 @@ class RawServer
   def shutdown
     @server.close
     @thread.join(1)
+  end
+
+  private
+
+  def read_request(client)
+    data = +""
+    data << client.readpartial(4096) until data.include?("\r\n\r\n")
+    head, rest = data.split("\r\n\r\n", 2)
+    length = head[/^content-length:\s*(\d+)/i, 1].to_i
+    rest << client.readpartial(4096) while rest.bytesize < length
   end
 end

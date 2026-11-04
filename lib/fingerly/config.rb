@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "ipaddr"
 require "uri"
 
 module Fingerly
@@ -118,6 +119,18 @@ module Fingerly
       end
 
       path
+    end
+
+    # Whether a value is exactly one IPv4 or IPv6 address and nothing else: no
+    # list, port, prefix length, zone, padding or whitespace.
+    def ip_literal?(value)
+      return false unless value.is_a?(String) && value.length <= 45
+      return false unless value.match?(/\A[0-9A-Fa-f:.]+\z/)
+
+      IPAddr.new(value)
+      true
+    rescue IPAddr::Error
+      false
     end
 
     # Whether a value is printable ASCII, so it cannot inject a header of its

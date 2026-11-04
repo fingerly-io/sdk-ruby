@@ -16,9 +16,9 @@ module Fingerly
     attr_reader :request_method
     # @return [String] the request path as the application sees it
     attr_reader :path
-    # @return [String, nil] the socket peer's address, when the server reports
-    #   one. This is your load balancer, not the visitor, whenever one is in
-    #   front of you.
+    # @return [String, nil] the TCP peer's address (+REMOTE_ADDR+), when the
+    #   server reports one. This is your load balancer or CDN, not the
+    #   visitor, whenever one is in front of you.
     attr_reader :peer_host
 
     # @api private
@@ -97,6 +97,9 @@ module Fingerly
     # dashboard.
     PROXY_VERSION = "ruby/#{VERSION}".freeze
 
+    # The answer when client_ip returns anything but one IP address.
+    NO_CLIENT_IP = "The client IP callback returned no valid address"
+
     # Statuses that must not carry a body.
     BODILESS = [204, 205, 304].freeze
 
@@ -166,6 +169,10 @@ module Fingerly
 
       @app = app
       @logger = logger
+      # Set once the client_ip misconfiguration has been logged, so a broken
+      # callback costs one log line per process rather than one per visitor.
+      @misconfigured = []
+      @misconfigured_lock = Mutex.new
       @client_ip = client_ip
       @uses_proxy_key = !proxy_key.nil?
       @key = proxy_key || secret_key
@@ -245,8 +252,10 @@ module Fingerly
     end
 
     def forward(env, request, api_key, body)
-      headers = upstream_headers(request, api_key)
-      return refuse(500, "Internal Server Error") if headers.nil?
+      address = client_address(env, request)
+      return refuse(500, NO_CLIENT_IP) if address.nil?
+
+      headers = upstream_headers(request, api_key, address)
 
       # Both of the browser SDK's calls go to the one ingest URL, which tells
       # them apart by their bodies. The whole answer is read, within its cap,
@@ -259,6 +268,35 @@ module Fingerly
     rescue Error => e
       # Refused, reset, unresolvable, malformed, truncated, or over the cap.
       upstream_failed(env, 502, "Bad gateway", e)
+    end
+
+    # What the callback returned, when it is exactly one IP address.
+    #
+    # Anything else means client_ip is wired up wrongly, and forwarding a
+    # wrong address would mis-score every visitor, so nothing is sent.
+    def client_address(env, request)
+      address = begin
+        @client_ip.call(request)
+      rescue StandardError => e
+        e
+      end
+      return address if Config.ip_literal?(address)
+
+      misconfigured(env, address)
+      nil
+    end
+
+    def misconfigured(env, returned)
+      first = @misconfigured_lock.synchronize do
+        next false unless @misconfigured.empty?
+
+        @misconfigured << true
+      end
+      return unless first
+
+      shown = returned.is_a?(Exception) ? "raised #{returned.class}" : "returned #{returned.class}"
+      log(env, "fingerly proxy: client_ip #{shown}, not one IP address; " \
+               "no identification is forwarded until it does (logged once)")
     end
 
     # Answers a failed upstream call and logs one line about it: no stack
@@ -300,13 +338,8 @@ module Fingerly
     # The visitor writes the origin, user agent and content type, so each is
     # checked before it is repeated into a header of ours.
     #
-    # @return [Hash, nil] nil when client_ip returned something unusable
-    def upstream_headers(request, api_key)
-      address = @client_ip.call(request)
-      # A client_ip that could inject a header is a programming error on the
-      # customer's side, not something to forward.
-      return nil unless Config.header_safe?(address)
-
+    # @return [Hash]
+    def upstream_headers(request, api_key, address)
       headers = {
         "content-type" => safe(request.header("content-type")) || "application/json",
         "x-api-key" => api_key,

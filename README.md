@@ -190,7 +190,7 @@ and no per-framework variants.
 config.middleware.use Fingerly::Proxy,
   proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
   path: "/k7x2qm4a",
-  client_ip: ->(request) { request.header("CF-Connecting-IP") }
+  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
 ```
 
 ```ruby
@@ -198,7 +198,7 @@ config.middleware.use Fingerly::Proxy,
 use Fingerly::Proxy,
     proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
     path: "/k7x2qm4a",
-    client_ip: ->(request) { request.header("CF-Connecting-IP") }
+    client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
 run MyApp
 ```
 
@@ -222,7 +222,7 @@ mount hands it.
 # config/routes.rb
 mount Fingerly::Proxy.new(
   proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
-  client_ip: ->(request) { request.header("CF-Connecting-IP") }
+  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
 ) => "/k7x2qm4a"
 ```
 
@@ -282,8 +282,17 @@ one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name
 outright, and Rack 2 refuses the array Rack 3 would rather have.
 
 > **`client_ip` is the one thing you must get right.** Resolve it from a
-> header your own infrastructure sets, such as your load balancer's or CDN's.
-> Never read the left-most `X-Forwarded-For` value: the visitor writes it.
+> header your own infrastructure sets, such as your load balancer's or CDN's,
+> and fall back to `request.peer_host`, the TCP peer, when it is absent, as in
+> local development. Trust that header only when traffic can reach your
+> application through that CDN alone; otherwise a visitor can set it. Never read
+> the left-most `X-Forwarded-For` value: the visitor writes it.
+
+`client_ip` must return exactly one IPv4 or IPv6 address. Anything else, `nil`
+or an empty string, a list, a port, a prefix length, or an exception, is a
+configuration mistake: the proxy sends nothing upstream, answers `500` with
+"The client IP callback returned no valid address", and logs it once per
+process rather than once per visitor.
 
 ## Development and release preparation
 

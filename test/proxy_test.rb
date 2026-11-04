@@ -7,6 +7,7 @@ require "rack/mock_request"
 require "rack/urlmap"
 require "stringio"
 require "zlib"
+require "logger"
 
 # Every response goes through Rack::Lint, which holds it to the Rack 3 spec:
 # lowercase header names, no newline in a value, a body that responds to each.
@@ -17,6 +18,7 @@ class ProxyTest < Minitest::Test
   PROXY_KEY = "fly_px_production_proxy"
   PUBLIC_KEY = "fly_pk_production_browser"
   PATH = "/k7x2qm4a"
+  QUIET = Logger.new(File::NULL)
 
   # Written as escapes so the intent survives a copy and paste: a carriage
   # return and a line feed, then a header of the attacker's choosing.
@@ -264,7 +266,7 @@ class ProxyTest < Minitest::Test
   def test_refuses_a_client_ip_that_could_inject_a_header
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
         client_ip: ->(_r) { INJECTED_IP }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
@@ -272,6 +274,73 @@ class ProxyTest < Minitest::Test
 
       assert_equal 500, response.status
       assert_empty api.requests
+    end
+  end
+
+  NOT_ONE_ADDRESS = [
+    nil, "", " ", "null", "unknown", "203.0.113.7, 10.0.0.1", "203.0.113.7 ", "203.0.113.7:443",
+    "203.0.113.0/24", "fe80::1%en0", "203.0.113", "203.0.113.256", "010.0.0.1", "[2001:db8::1]",
+    ["203.0.113.7"], 203
+  ].freeze
+
+  def test_refuses_anything_from_client_ip_but_one_address
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      NOT_ONE_ADDRESS.each do |value|
+        response = post_with_client_ip(api, ->(_r) { value })
+
+        assert_equal 500, response.status, value.inspect
+        assert_equal "The client IP callback returned no valid address", response.body
+        assert_equal "no-store", response.headers["cache-control"]
+      end
+
+      assert_empty api.requests, "nothing goes upstream with a wrong address"
+    end
+  end
+
+  def test_a_client_ip_that_raises_is_refused_the_same_way
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      response = post_with_client_ip(api, ->(_r) { raise KeyError, "no header" })
+
+      assert_equal 500, response.status
+      assert_empty api.requests
+    end
+  end
+
+  def test_logs_a_broken_client_ip_once_per_process_not_per_request
+    lines = []
+    logger = Object.new
+    logger.define_singleton_method(:warn) { |line| lines << line }
+    proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9",
+                                logger: logger, client_ip: ->(_r) {})
+    3.times do
+      Rack::MockRequest.new(proxy).post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+    end
+
+    assert_equal 1, lines.size
+    assert_match(/client_ip returned NilClass/, lines.first)
+  end
+
+  def test_forwards_ipv4_and_ipv6_addresses
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      %w[203.0.113.7 2001:db8::1 ::ffff:203.0.113.7].each do |address|
+        api.reset!
+        response = post_with_client_ip(api, ->(_r) { address })
+
+        assert_equal 200, response.status, address
+        assert_equal address, api.requests.first.header("x-fingerly-client-ip")
+      end
+    end
+  end
+
+  # Without a CDN header, as in local development, the README's callback
+  # falls back to the TCP peer.
+  def test_the_readme_callback_falls_back_to_the_peer_address
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      callback = ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
+      response = post_with_client_ip(api, callback, "REMOTE_ADDR" => "198.51.100.20")
+
+      assert_equal 200, response.status
+      assert_equal "198.51.100.20", api.requests.first.header("x-fingerly-client-ip")
     end
   end
 
@@ -435,7 +504,9 @@ class ProxyTest < Minitest::Test
     lines = []
     logger = Object.new
     logger.define_singleton_method(:warn) { |line| lines << line }
-    Rack::MockRequest.new(build("http://127.0.0.1:9")).post(
+    proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9",
+                                client_ip: ->(_r) { "203.0.113.7" })
+    Rack::MockRequest.new(proxy).post(
       PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "rack.logger" => logger
     )
 
@@ -468,7 +539,7 @@ class ProxyTest < Minitest::Test
     end
     FakeAPI.run(handler) do |api|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, timeout: 0.3,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET, timeout: 0.3,
         client_ip: ->(_r) { "203.0.113.7" }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
@@ -481,7 +552,7 @@ class ProxyTest < Minitest::Test
   def test_the_deadline_covers_the_upstream_headers
     TricklingServer.run(interval: 0.2, lines: 50) do |server|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, path: PATH, upstream: server.origin, timeout: 0.75,
+        proxy_key: PROXY_KEY, path: PATH, upstream: server.origin, logger: QUIET, timeout: 0.75,
         client_ip: ->(_r) { "203.0.113.7" }
       )
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -551,7 +622,7 @@ class ProxyTest < Minitest::Test
   def test_reads_the_visitor_address_from_the_header_the_customer_names
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
         client_ip: ->(request) { request.header("CF-Connecting-IP") }
       )
       Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
@@ -569,7 +640,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       seen = nil
       proxy = Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
+        proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
         client_ip: lambda { |request|
           seen = request
           request.peer_host
@@ -587,6 +658,13 @@ class ProxyTest < Minitest::Test
 
   private
 
+  def post_with_client_ip(api, callback, **env)
+    proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
+                                logger: QUIET, client_ip: callback)
+    Rack::MockRequest.new(Rack::Lint.new(proxy))
+                     .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, **env)
+  end
+
   def assert_gateway_error(status, text, response, label = nil)
     assert_equal status, response.status, label
     assert_equal text, response.body, label
@@ -598,7 +676,7 @@ class ProxyTest < Minitest::Test
   def build(upstream, app: nil, path: PATH, max_body_bytes: 1 << 20)
     Fingerly::Proxy.new(
       app,
-      proxy_key: PROXY_KEY, path: path, upstream: upstream,
+      proxy_key: PROXY_KEY, path: path, upstream: upstream, logger: QUIET,
       max_body_bytes: max_body_bytes, client_ip: ->(_r) { "203.0.113.7" }
     )
   end
