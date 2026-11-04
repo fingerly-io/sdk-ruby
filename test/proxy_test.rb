@@ -57,7 +57,8 @@ class ProxyTest < Minitest::Test
   end
 
   def test_refuses_a_path_that_is_not_a_path
-    ["k7x2qm4a", "/k7x2qm4a?x=1", "/k7x2qm4a#x", "/", "///", "", " "].each do |path|
+    ["k7x2qm4a", "/k7x2qm4a?x=1", "/k7x2qm4a#x", "/", "///", "", " ", "//k7x2qm4a",
+     "/a//b", "/./k7x2qm4a", "/a/../b", "/k7x2qm4a%2F", "/k7 x"].each do |path|
       assert_raises(Fingerly::ConfigurationError, "accepted #{path.inspect}") do
         Fingerly::Proxy.new(
           proxy_key: PROXY_KEY, path: path, client_ip: ->(_r) { "203.0.113.7" }
@@ -96,9 +97,15 @@ class ProxyTest < Minitest::Test
 
   ROUTES = {
     PATH => true,
-    "#{PATH}/" => true,                      # trailing slashes are ignored
-    "#{PATH}//" => true,
-    "#{PATH}/admin" => false,                # matched exactly, nothing under it
+    "#{PATH}/" => false,                     # matched exactly: no trailing slash
+    "#{PATH}//" => false,
+    "/#{PATH}" => false,                     # no doubled slash
+    "#{PATH}/." => false,                    # no dot segment
+    "#{PATH}/../k7x2qm4a" => false,
+    "#{PATH}%2F" => false,                   # no encoded slash
+    "#{PATH};x" => false,
+    PATH.upcase => false,                    # case-sensitive
+    "#{PATH}/admin" => false,                # nothing under it
     "#{PATH}x" => false,
     "/k7x2qm4" => false,
     "/other" => false,
@@ -599,6 +606,38 @@ class ProxyTest < Minitest::Test
 
       assert_equal 200, response.status
       assert_equal "/api/v1/ingest", api.requests.first.path
+    end
+  end
+
+  # A mount matches a prefix; the proxy still answers only the exact path.
+  # Rails hands the mount PATH_INFO "/" for the path with or without a
+  # trailing slash, so the raw request line decides.
+  MOUNTED = {
+    [PATH, "", PATH] => true,                # Rack::URLMap, exact
+    [PATH, "/", PATH] => true,               # Rails mount, exact
+    [PATH, "/", "#{PATH}?x=1"] => true,      # a query is not part of the path
+    ["/shop#{PATH}", "", "/shop#{PATH}"] => true, # a sub-URI deployment
+    [PATH, "/", "http://shop.example#{PATH}"] => true, # absolute-form target
+    [PATH, "/", "#{PATH}/"] => false, # trailing slash
+    [PATH, "/", "#{PATH}//"] => false,
+    [PATH, "/admin", "#{PATH}/admin"] => false,
+    [PATH, "/.", "#{PATH}/."] => false,
+    [PATH, "/;x", "#{PATH};x"] => false,
+    [PATH, "/%2F", "#{PATH}%2F"] => false
+  }.freeze
+
+  def test_a_mount_answers_only_its_exact_path
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      proxy = build(api.origin, path: nil)
+      MOUNTED.each do |(script_name, path_info, request_uri), answered|
+        env = Rack::MockRequest.env_for(request_uri, method: "POST", input: "{}",
+                                                     "HTTP_X_API_KEY" => PUBLIC_KEY)
+        env.merge!("SCRIPT_NAME" => script_name, "PATH_INFO" => path_info,
+                   "REQUEST_URI" => request_uri)
+        status, = proxy.call(env)
+
+        assert_equal answered ? 200 : 404, status, request_uri
+      end
     end
   end
 

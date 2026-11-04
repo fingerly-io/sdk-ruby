@@ -196,13 +196,15 @@ module Fingerly
     # and under Rack 3 that stream is not required to rewind, so the
     # application it passed the request along to would receive nothing.
     #
-    # Trailing slashes are ignored on both sides. Without a configured +path+
-    # every request is the proxy's, because the framework routed it here.
+    # The match is exact and case-sensitive: no trailing or doubled slash, no
+    # dot segment, no encoded slash, nothing under the path. Without a
+    # configured +path+ the framework routed the request here, and {#call}
+    # checks that the mount was hit exactly.
     #
     # @param path [String] the request path
     # @return [Boolean]
     def handles?(path)
-      @path.nil? || path.to_s.sub(%r{/+\z}, "") == @path
+      @path.nil? || path.to_s == @path
     end
 
     # Serves one Rack request.
@@ -215,7 +217,7 @@ module Fingerly
       # about, so the application-relative path is the one that means the
       # same thing wherever the application is deployed.
       path = env["PATH_INFO"].to_s
-      return pass(env) unless handles?(path)
+      return pass(env) unless @path ? handles?(path) : mounted_exactly?(env)
 
       request = ProxyRequest.new(env, path)
       return refuse(405, "Method Not Allowed", "allow" => "POST") unless
@@ -243,6 +245,23 @@ module Fingerly
     def redacted_fields
       [["path", @path.inspect], ["api_version", @api_version],
        [@uses_proxy_key ? "proxy_key" : "secret_key", Redacted::MARK]]
+    end
+
+    # Whether a mount routed exactly its own path here.
+    #
+    # A Rails +mount+ or +Rack::URLMap+ matches a prefix and moves it into
+    # SCRIPT_NAME, so +/k7x2qm4a/admin+ arrives with PATH_INFO +/admin+. Rails
+    # also hands the mount PATH_INFO +/+ for both +/k7x2qm4a+ and
+    # +/k7x2qm4a/+, so where the server reports the raw request line in
+    # REQUEST_URI, as Puma and Falcon do, that is compared too.
+    def mounted_exactly?(env)
+      return false unless ["", "/"].include?(env["PATH_INFO"].to_s)
+
+      raw = env["REQUEST_URI"]
+      return true unless raw.is_a?(String) && !raw.empty?
+
+      raw = raw.sub(%r{\A[a-z][a-z0-9+.-]*://[^/]*}i, "") # an absolute-form target
+      raw.split("?", 2).first == env["SCRIPT_NAME"].to_s
     end
 
     def pass(env)

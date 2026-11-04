@@ -114,9 +114,10 @@ module Fingerly
     # under it.
     def normalize_path(value)
       path = value.to_s.strip.sub(%r{/+\z}, "")
-      unless path.start_with?("/") && path.length >= 2 && !path.match?(/[?#]/)
-        raise ConfigurationError, "path must be an absolute URL path such as /k7x2qm4a"
-      end
+      segments = path.split("/", -1).drop(1)
+      usable = path.match?(%r{\A(/[A-Za-z0-9._~-]+)+\z}) &&
+               !segments.intersect?(%w[. ..])
+      raise ConfigurationError, "path must be an absolute URL path such as /k7x2qm4a" unless usable
 
       path
     end
