@@ -1,0 +1,22 @@
+# Changelog
+
+## 0.1.0 (unreleased)
+
+First release, not yet published.
+
+- Event reads (`Fingerly::Client#events`) with one deadline over the whole
+  exchange: connecting, sending, the response headers and the body.
+- Every non-2xx answer, a redirect included, raises `Fingerly::APIError` with
+  `status`, `code`, `details`, `request_id` and `retry_after`. Network failures
+  raise `Fingerly::ConnectionError` or `Fingerly::TimeoutError`. Reads never
+  retry by themselves. Response bodies over 4 MiB are refused.
+- One idle connection pool per process, shared by every thread and fiber,
+  recycled after 60 seconds and dropped after 15 seconds idle.
+- Webhook verification with rotation support, reading at most 32 signatures.
+- The same-origin proxy as Rack middleware or a mount, answering only its
+  exact path, forwarding only one valid client IP address, and answering
+  upstream trouble with `504 Gateway timeout` or `502 Bad gateway`, logged in
+  one line. It reports itself upstream as `ruby/0.1.0`.
+- No object shows a credential through `inspect`, `to_s`, `pp`, JSON or YAML,
+  and `Marshal.dump` refuses them.
+- Requires Ruby 3.2+. No runtime dependencies.

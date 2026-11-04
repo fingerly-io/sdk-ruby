@@ -13,8 +13,10 @@ require "fingerly"
 
 fingerly = Fingerly::Client.new(secret_key: ENV.fetch("FINGERLY_SECRET_KEY"))
 
+request_id = ARGV.fetch(0) # the requestId the browser SDK's identify() returned
 event = fingerly.events.get(request_id)
 page = fingerly.events.list(level: "high", limit: 50)
+page.each { |row| puts "#{row.request_id} #{row.suspect_level}" }
 ```
 
 Event reads require `fly_sk_{production|staging|development}_` keys. Requests
@@ -24,8 +26,9 @@ before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
 and never retry.
 
-Ruby 3.2 or newer. No runtime dependencies: everything it needs is in the
-standard library. Rack is a contract rather than a dependency, so the proxy
+Requires Ruby 3.2+, which is what the gemspec declares. On 3.1 `Net::HTTP`
+does not cooperate with a fiber scheduler, so the claim below would not hold.
+No runtime dependencies: everything it needs is in the standard library. Rack is a contract rather than a dependency, so the proxy
 speaks it without loading it and cannot pin a version against your own.
 
 ## There is no asynchronous client, and none is needed
@@ -41,6 +44,11 @@ gem the blocking reads in this SDK yield to the scheduler rather than holding
 the thread. Concurrent calls overlap without a second API to choose between,
 and there are tests asserting exactly that under both a fiber scheduler and
 plain threads.
+
+Where there is no fiber scheduler, a call holds its thread until it answers,
+for at most `timeout:`. That is what Puma and Unicorn expect. Do not call the
+client from an event loop that is not a fiber scheduler, such as an
+EventMachine reactor: there it would stall every connection the loop serves.
 
 ## Deadlines
 
@@ -77,10 +85,12 @@ never valid is a programming mistake rather than something a rescue around the
 call site can help with.
 
 ```ruby
-begin
+def decide(fingerly, request_id)
   event = fingerly.events.get(request_id)
+  event.scored? && event.suspect_level == "low" ? "allow" : "review"
 rescue Fingerly::APIError => e
-  return "refuse" if e.status == 404
+  return "refuse" if e.event_not_found?
+  return "retry later" if e.status == 429
 
   raise
 end
@@ -125,7 +135,7 @@ An event is readable as soon as identification answers, so this needs nothing
 special:
 
 ```ruby
-event = fingerly.events.get(request_id)
+event = fingerly.events.get(params.require(:request_id)) # in a Rails controller
 ```
 
 Earlier versions had a `wait_for` that polled through the gap between
@@ -160,10 +170,16 @@ class FingerlyWebhooksController < ActionController::API
     return head :bad_request unless valid
 
     event = Fingerly::Webhooks.parse(payload)
-    FingerlyEventJob.perform_later(event.id, payload)   # deduplicate on the ID
+    # Hand the work to your own job queue here, deduplicating on event.id.
+    Rails.logger.info("Fingerly webhook #{event.id} (#{event.type})")
     head :no_content
   end
 end
+```
+
+```ruby
+# config/routes.rb
+post "/webhooks/fingerly", to: "fingerly_webhooks#create"
 ```
 
 Verify the exact raw bytes before parsing them. `request.raw_post` is those
@@ -192,15 +208,25 @@ interface every Ruby server and framework shares, so there is one middleware
 and no per-framework variants.
 
 ```ruby
-# config/application.rb
-config.middleware.use Fingerly::Proxy,
+# config/application.rb, inside `class Application < Rails::Application`
+config.middleware.insert_before 0, Fingerly::Proxy,
   proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
   path: "/k7x2qm4a",
   client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
 ```
 
+Use `insert_before 0`, not `use`. `use` appends the proxy after Rails' own
+middleware, which then rewrites its answers on the way out:
+`ActionDispatch::RequestId` replaces Fingerly's `x-request-id` with a Rails
+one, and `Rack::ETag` and `Rack::Runtime` add `etag` and `x-runtime`. At the
+front of the stack the proxy answers before any of them, and before anything
+that could redirect a signed-out visitor.
+
 ```ruby
 # config.ru, for Sinatra, Hanami or a bare Rack app
+require "fingerly"
+require_relative "app" # defines MyApp, your Sinatra or Rack application
+
 use Fingerly::Proxy,
     proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
     path: "/k7x2qm4a",
@@ -208,7 +234,7 @@ use Fingerly::Proxy,
 run MyApp
 ```
 
-Put it early, ahead of authentication: the browser SDK sends no cookies and
+Put it first, ahead of authentication: the browser SDK sends no cookies and
 carries no user, and a filter that redirected it to a sign-in page would break
 identification for every signed-out visitor.
 
@@ -216,6 +242,8 @@ Then point the browser SDK at the same path. Both of its calls go there, with
 nothing appended:
 
 ```ts
+import { load } from '@fingerly/web-js'
+
 const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
 
@@ -253,7 +281,11 @@ version in that URL.
 
 The browser must present a public key from the same environment as the proxy
 key, or the request gets `401`. Bodies over 1 MiB get `413`,
-enforced while reading rather than after buffering. Only the content type, the
+enforced while reading rather than after buffering. That bounds what the proxy
+holds. A server that buffers the whole request before calling the application,
+as Puma does, has already read it by then, so bound request bodies there with
+the server's or the load balancer's own limit as well. Falcon streams the body,
+so there the proxy stops reading at the limit. Only the content type, the
 visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
 customer cookies and authorization headers never are. The proxy reports itself
 upstream as `ruby/0.1.0` in `x-fingerly-proxy-version`, which the dashboard
