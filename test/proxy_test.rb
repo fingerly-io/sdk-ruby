@@ -372,6 +372,12 @@ class ProxyTest < Minitest::Test
 
       assert_equal 204, response.status
       assert_equal "", response.body
+
+      env = Rack::MockRequest.env_for(PATH, method: "POST", input: "{}",
+                                            "HTTP_X_API_KEY" => PUBLIC_KEY)
+      _status, _headers, body = build(api.origin).call(env)
+
+      assert_empty body, "not even one empty chunk"
     end
   end
 

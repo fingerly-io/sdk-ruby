@@ -340,8 +340,11 @@ module Fingerly
         headers[key] = Array(values).join(", ") if RELAYED_HEADERS.include?(key)
       end
 
-      body = BODILESS.include?(result.status) ? "" : result.body
-      [result.status, headers, [body]]
+      # No chunk at all, not one empty chunk: some servers warn on, or count,
+      # an empty string in the body of a status that must not have one.
+      return [result.status, headers, []] if BODILESS.include?(result.status)
+
+      [result.status, headers, [result.body]]
     end
 
     # Reads a body without buffering more than the limit.
