@@ -94,6 +94,7 @@ module Fingerly
 
     def initialize: (Hash[String, untyped]) -> void
     def each: () { (Event) -> void } -> Array[Event]
+            | () -> Enumerator[Event, Array[Event]]
   end
 
   class WebhookEvent

@@ -42,6 +42,24 @@ class SignaturesTest < Minitest::Test
     assert_empty public_types - declared, "undeclared public types"
   end
 
+  # EventPage#each without a block returns an Enumerator, as Array#each does,
+  # so page.each.with_index must type-check too.
+  def test_each_is_declared_with_and_without_a_block
+    entry = environment.class_decls[RBS::TypeName.parse("::Fingerly::EventPage")]
+    each = declared_members(entry).find do |member|
+      member.is_a?(RBS::AST::Members::MethodDefinition) && member.name == :each
+    end
+    blocks = each.overloads.map { |overload| !overload.method_type.block.nil? }
+
+    assert_equal [true, false], blocks
+    rows = %w[a b c].map { |id| { "request_id" => id, "occurred_at" => "2026-01-02T03:04:05Z" } }
+    page = Fingerly::EventPage.new("rows" => rows)
+
+    numbered = page.each.with_index(1).map { |event, i| [i, event.request_id] }
+
+    assert_equal [[1, "a"], [2, "b"], [3, "c"]], numbered
+  end
+
   private
 
   def internal?(value)
