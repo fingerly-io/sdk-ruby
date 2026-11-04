@@ -29,6 +29,7 @@ module Fingerly
       ?retry_after: Integer?
     ) -> void
     def event_not_found?: () -> bool
+    def pending?: () -> bool
   end
 
   class TimeoutError < Error

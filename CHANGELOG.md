@@ -10,6 +10,10 @@ First release, not yet published.
   `status`, `code`, `details`, `request_id` and `retry_after`. Network failures
   raise `Fingerly::ConnectionError` or `Fingerly::TimeoutError`. Reads never
   retry by themselves. Response bodies over 4 MiB are refused.
+- `Fingerly::APIError#pending?` for `404 event_pending`: the event was
+  accepted and is still being recorded, so read again after `retry_after`
+  seconds. `event_not_found?` still matches only `event_not_found` (never
+  issued, or past retention).
 - One idle connection pool per process, shared by every thread and fiber,
   recycled after 60 seconds and dropped after 15 seconds idle.
 - Webhook verification with rotation support, reading at most 32 signatures.

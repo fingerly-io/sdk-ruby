@@ -90,6 +90,7 @@ def decide(fingerly, request_id)
   event = fingerly.events.get(request_id)
   event.scored? && event.suspect_level == "low" ? "allow" : "review"
 rescue Fingerly::APIError => e
+  return "retry later" if e.pending? # not decided yet: read again after e.retry_after
   return "refuse" if e.event_not_found?
   return "retry later" if e.status == 429
 
@@ -103,9 +104,19 @@ It carries `status`, and optional `code`, `details`, `request_id` and
 response body is never echoed. `request_id` falls back to the `x-request-id`
 header when the body is not an error envelope. `retry_after` is the
 `Retry-After` header in whole seconds, from either of its forms, or `nil`
-when there was none: on a `429`, wait that long before reading again. The
-client never retries by itself. `event_not_found?` names the one retryable read failure, so
-it needs no status-and-code check of your own. A deadline raises
+when there was none: on a `429` or a pending event, wait that long before
+reading again.
+
+A read answers `404` with one of two codes, each with its own predicate:
+
+- `pending?`: `event_pending`, the request id was accepted and the event is
+  still being recorded. Nothing is decided yet: read again after
+  `retry_after` seconds (the API sends `Retry-After: 2`), or verify
+  asynchronously. Do not treat it as fraud.
+- `event_not_found?`: `event_not_found`, the request id was never issued, or
+  the event is past retention.
+
+The client never retries by itself. A deadline raises
 `Fingerly::TimeoutError`; an unreachable API raises
 `Fingerly::ConnectionError`.
 
@@ -132,16 +143,26 @@ adds later is reachable without a gem upgrade.
 
 ## Read an event you just identified
 
-An event is readable as soon as identification answers, so this needs nothing
-special:
+An event is usually readable as soon as identification answers. If it is
+still being recorded, the read raises a `Fingerly::APIError` whose `pending?`
+is true and whose `retry_after` says when to read again:
 
 ```ruby
-event = fingerly.events.get(params.require(:request_id)) # in a Rails controller
+# Returns the event, or nil while it is still being recorded.
+def read_event(fingerly, request_id)
+  fingerly.events.get(request_id)
+rescue Fingerly::APIError => e
+  raise unless e.pending?
+
+  # Not recorded yet, so nothing is decided: read again after e.retry_after
+  # seconds (2 when nil), or verify asynchronously.
+  nil
+end
 ```
 
-Earlier versions had a `wait_for` that polled through the gap between
-identification and the event becoming queryable. There is no gap, so
-`event_not_found?` now means a request id that was never issued.
+Retry a pending read a bounded number of times, for example from a background
+job. `event_not_found?` means a request id that was never issued, or one past
+retention, and is never pending.
 
 The archived document arrives moments after the event itself, so check
 `has_document?` rather than assuming it is there.
@@ -150,10 +171,11 @@ The archived document arrives moments after the event itself, so check
 
 Read the event with a server-only key. Check that its tag matches your action,
 that it is recent, that its environment is correct, and that it was scored.
-Apply your own policy to the server's verdict. Do not authorize an action
-using scores or visitor identifiers supplied by the browser. Tags correlate
-events; they do not replace your application's authentication or replay
-protection.
+Apply your own policy to the server's verdict. A pending event (`pending?`)
+is not a verdict: retry after `retry_after` seconds or verify asynchronously,
+rather than refusing the action. Do not authorize an action using scores or
+visitor identifiers supplied by the browser. Tags correlate events; they do
+not replace your application's authentication or replay protection.
 
 ## Webhooks
 

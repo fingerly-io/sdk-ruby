@@ -179,9 +179,11 @@ module Fingerly
     #
     # @param request_id [String] the +request_id+ returned by identification
     # @return [Event]
-    # @raise [APIError] on any non-2xx response. An event is readable as soon
-    #   as identification answers, so +404 event_not_found+ means a request id
-    #   that was never issued.
+    # @raise [APIError] on any non-2xx response. +404 event_pending+
+    #   ({APIError#pending?}) means the event was accepted and is still being
+    #   recorded: retry after {APIError#retry_after} seconds.
+    #   +404 event_not_found+ means a request id that was never issued, or one
+    #   past retention.
     # @raise [TimeoutError] if the request exceeds the client timeout
     def get(request_id)
       raise ConfigurationError, "request_id is required" if request_id.to_s.empty?

@@ -8,6 +8,7 @@ class EventsTest < Minitest::Test
                '"occurred_at":"2026-01-02T03:04:05Z","extra":1}'
   EMPTY_PAGE = '{"rows":[],"page":1,"page_size":50}'
   NOT_FOUND = '{"error":{"code":"event_not_found"},"request_id":"trace"}'
+  PENDING = '{"error":{"code":"event_pending"},"request_id":"trace"}'
 
   def test_keeps_the_response_body_as_it_arrived
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
@@ -86,9 +87,8 @@ class EventsTest < Minitest::Test
     end
   end
 
-  # An event is readable as soon as identification answers, so a missing one
-  # means a request id that was never issued: raised at once, in one request,
-  # rather than waited through.
+  # A missing event (never issued, or past retention) is raised at once, in
+  # one request, rather than waited through.
   def test_reports_a_missing_event_without_retrying
     FakeAPI.run(FakeAPI.json(404, NOT_FOUND)) do |api|
       error = assert_raises(Fingerly::APIError) do
@@ -97,8 +97,41 @@ class EventsTest < Minitest::Test
 
       assert_equal 404, error.status
       assert_predicate error, :event_not_found?
+      refute_predicate error, :pending?
       assert_equal "trace", error.request_id
       assert_equal 1, api.requests.size
+    end
+  end
+
+  # An accepted request id whose event is still being recorded is a 404 of
+  # its own: an API error carrying Retry-After, distinct from a missing event,
+  # and never retried by the SDK.
+  def test_reports_a_pending_event_with_retry_after_without_retrying
+    handler = lambda do |_req, res|
+      res.status = 404
+      res["content-type"] = "application/json"
+      res["retry-after"] = "2"
+      res.body = PENDING
+    end
+    FakeAPI.run(handler) do |api|
+      error = assert_raises(Fingerly::APIError) do
+        client(api).events.get("r1")
+      end
+
+      assert_equal 404, error.status
+      assert_equal "event_pending", error.code
+      assert_predicate error, :pending?
+      refute_predicate error, :event_not_found?
+      assert_equal 2, error.retry_after
+      assert_equal 1, api.requests.size
+    end
+  end
+
+  def test_pending_is_narrow
+    FakeAPI.run(FakeAPI.json(429, PENDING)) do |api|
+      error = assert_raises(Fingerly::APIError) { client(api).events.get("r1") }
+
+      refute_predicate error, :pending?
     end
   end
 
@@ -111,6 +144,7 @@ class EventsTest < Minitest::Test
 
         assert_equal status, error.status
         refute_predicate error, :event_not_found?
+        refute_predicate error, :pending?
         assert_equal 1, api.requests.size
       end
     end

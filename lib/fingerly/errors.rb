@@ -23,7 +23,8 @@ module Fingerly
   #   begin
   #     event = fingerly.events.get(request_id)
   #   rescue Fingerly::APIError => e
-  #     return "refuse" if e.status == 404
+  #     return "retry" if e.pending? # not recorded yet: retry after e.retry_after
+  #     return "refuse" if e.event_not_found?
   #     raise
   #   end
   class APIError < Error
@@ -44,7 +45,8 @@ module Fingerly
 
     # @return [Integer, nil] seconds to wait before trying again, from the
     #   +Retry-After+ header, or nil when the response carried none. Sent with
-    #   429 and some 503 answers; the SDK never retries by itself.
+    #   429, +404 event_pending+ and some 503 answers; the SDK never retries by
+    #   itself.
     attr_reader :retry_after
 
     # @api private
@@ -58,14 +60,26 @@ module Fingerly
       super(code ? "#{described} (#{code})" : described)
     end
 
-    # Whether this is a read for an event that does not exist.
+    # Whether this is a read for an event that does not exist: a request id
+    # that was never issued, or one past retention.
     #
-    # One is readable as soon as identification answers, so this means a
-    # request id that was never issued rather than one that has not landed.
+    # It is false for {#pending?}: that event exists and is still being
+    # recorded.
     #
     # @return [Boolean]
     def event_not_found?
       status == 404 && code == "event_not_found"
+    end
+
+    # Whether this is a read for an event the API accepted but has not
+    # recorded yet (+404 event_pending+).
+    #
+    # Nothing is decided yet: read again after {#retry_after} seconds, or
+    # verify asynchronously. The SDK never retries by itself.
+    #
+    # @return [Boolean]
+    def pending?
+      status == 404 && code == "event_pending"
     end
   end
 
