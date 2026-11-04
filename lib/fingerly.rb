@@ -2,6 +2,7 @@
 
 require_relative "fingerly/version"
 require_relative "fingerly/errors"
+require_relative "fingerly/redacted"
 require_relative "fingerly/config"
 require_relative "fingerly/models"
 require_relative "fingerly/transport"

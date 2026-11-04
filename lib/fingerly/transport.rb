@@ -31,6 +31,8 @@ module Fingerly
   #
   # @api private
   class Transport
+    include Redacted
+
     # A response body is small; anything larger did not come from this API.
     MAX_BODY_BYTES = 16 * 1024 * 1024
 
@@ -85,6 +87,10 @@ module Fingerly
     end
 
     private
+
+    def redacted_fields
+      [["origin", "#{@uri.scheme}://#{@uri.host}:#{@uri.port}"], ["timeout", @timeout]]
+    end
 
     def perform(request, deadline:, idempotent:)
       http, reused = connection

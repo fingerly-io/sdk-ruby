@@ -85,6 +85,11 @@ it needs no status-and-code check of your own. A deadline raises
 `Fingerly::TimeoutError`; an unreachable API raises
 `Fingerly::ConnectionError`.
 
+No object in the SDK shows a credential. A client or proxy printed with
+`inspect`, `to_s`, `pp`, `to_json` or YAML shows `[redacted]` in place of its
+key, and `Marshal.dump` refuses it. The request handed to `client_ip` hides the
+visitor's cookies and authorization header the same way.
+
 ## Unscored events
 
 `event.suspect_score` is `nil` when the request was not scored. Never read nil

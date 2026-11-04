@@ -119,6 +119,8 @@ module Fingerly
     ) -> void
     def close: () -> void
     def get: (String) -> Hash[String, untyped]
+
+    def inspect: () -> String
   end
 
   class Events
@@ -134,6 +136,8 @@ module Fingerly
     ) -> EventPage
     def self.escape: (untyped) -> String
     def self.instant: (Time) -> String
+
+    def inspect: () -> String
   end
 
   module Webhooks
@@ -162,6 +166,8 @@ module Fingerly
     def header: (String) -> String?
     def headers: () -> Hash[String, String]
     def self.headers_from: (Hash[String, untyped]) -> Hash[String, String]
+
+    def inspect: () -> String
   end
 
   class Proxy
@@ -190,5 +196,7 @@ module Fingerly
     ) -> void
     def handles?: (String) -> bool
     def call: (Hash[String, untyped]) -> [Integer, Hash[String, String], Array[String]]
+
+    def inspect: () -> String
   end
 end

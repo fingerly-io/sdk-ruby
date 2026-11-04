@@ -13,9 +13,9 @@ require "pathname"
 class SignaturesTest < Minitest::Test
   SIG_DIR = Pathname(File.expand_path("../sig", __dir__))
 
-  # Config, Models and Transport are marked @api private; they are
+  # Config, Models, Redacted and Transport are marked @api private; they are
   # implementation detail rather than a surface anyone should type against.
-  INTERNAL = %w[Fingerly::Config Fingerly::Models Fingerly::Transport].freeze
+  INTERNAL = %w[Fingerly::Config Fingerly::Models Fingerly::Redacted Fingerly::Transport].freeze
 
   def test_every_declared_name_exists
     missing = []

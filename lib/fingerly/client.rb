@@ -14,6 +14,8 @@ module Fingerly
   #   fingerly = Fingerly::Client.new(secret_key: ENV.fetch("FINGERLY_SECRET_KEY"))
   #   event = fingerly.events.get(request_id)
   class Client
+    include Redacted
+
     DEFAULT_TIMEOUT = 10
     DEFAULT_API_VERSION = "v1"
     USER_AGENT = "fingerly-ruby/#{VERSION}".freeze
@@ -44,6 +46,7 @@ module Fingerly
       origin = Config.normalize_endpoint(endpoint || Config::DEFAULT_ENDPOINT)
 
       @secret_key = secret_key
+      @origin = origin
       @base_path = "/api/#{Config.normalize_api_version(api_version)}"
       @transport = Transport.new(
         origin: origin,
@@ -81,6 +84,10 @@ module Fingerly
     end
 
     private
+
+    def redacted_fields
+      [["endpoint", @origin + @base_path], ["secret_key", Redacted::MARK]]
+    end
 
     # @raise [Error] if the body is not JSON, which means it did not come from
     #   the Fingerly API
@@ -142,6 +149,8 @@ module Fingerly
   # Reads events stored for the organization and environment of the client's
   # secret key. Reached as +fingerly.events+.
   class Events
+    include Redacted
+
     # @api private
     def initialize(client)
       @client = client
@@ -208,6 +217,12 @@ module Fingerly
       raise ConfigurationError, "from and to must be Time values" unless value.is_a?(Time)
 
       value.utc.iso8601(3)
+    end
+
+    private
+
+    def redacted_fields
+      []
     end
   end
 end

@@ -9,6 +9,8 @@ module Fingerly
   # Rack spells headers +HTTP_CF_CONNECTING_IP+; this spells them the way they
   # arrived, matched without regard to case.
   class ProxyRequest
+    include Redacted
+
     # @return [String] the HTTP method. Named for Rack's own +request_method+
     #   rather than +method+, which every Ruby object already answers to.
     attr_reader :request_method
@@ -54,6 +56,14 @@ module Fingerly
       end
       headers.freeze
     end
+
+    private
+
+    # The visitor's cookies and authorization header are in +headers+; a
+    # client_ip that logs the request must not print them.
+    def redacted_fields
+      [["method", @request_method], ["path", @path], ["peer_host", @peer_host.inspect]]
+    end
   end
 
   # Same-origin proxy for the browser SDK, as a Rack application or middleware.
@@ -78,6 +88,8 @@ module Fingerly
   # event reads. Customer cookies and authorization headers are never passed
   # on, and nothing that names Fingerly is relayed back.
   class Proxy
+    include Redacted
+
     DEFAULT_MAX_BODY_BYTES = 1 << 20
     DEFAULT_TIMEOUT = 5
     USER_AGENT = "fingerly-ruby/#{VERSION}".freeze
@@ -208,6 +220,11 @@ module Fingerly
     end
 
     private
+
+    def redacted_fields
+      [["path", @path.inspect], ["api_version", @api_version],
+       [@uses_proxy_key ? "proxy_key" : "secret_key", Redacted::MARK]]
+    end
 
     def pass(env)
       return @app.call(env) if @app
