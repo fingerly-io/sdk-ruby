@@ -158,6 +158,32 @@ class ClientTest < Minitest::Test
     end
   end
 
+  def test_refuses_a_response_body_over_four_mebibytes
+    [
+      "HTTP/1.1 200 OK\r\ncontent-length: #{(4 << 20) + 1}\r\n\r\n{}",
+      "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n#{" " * ((4 << 20) + 1)}"
+    ].each do |raw|
+      RawServer.run(raw) do |server|
+        error = assert_raises(Fingerly::Error) { raw_client(server).events.get("r1") }
+
+        assert_match(/more than 4194304 bytes/, error.message)
+      end
+    end
+  end
+
+  # Network failures arrive as the SDK's own errors, never a raw runtime one.
+  def test_wraps_a_broken_response_in_a_connection_error
+    [
+      "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{\"request_id\":",
+      "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: 8\r\n\r\nnot gzip",
+      "garbage\r\n\r\n"
+    ].each do |raw|
+      RawServer.run(raw) do |server|
+        assert_raises(Fingerly::ConnectionError, raw) { raw_client(server).events.get("r1") }
+      end
+    end
+  end
+
   def test_does_not_follow_a_redirect
     handler = lambda do |_req, res|
       res.status = 302
@@ -218,6 +244,10 @@ class ClientTest < Minitest::Test
   end
 
   private
+
+  def raw_client(server)
+    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: server.origin, timeout: 5)
+  end
 
   def client(api, timeout: 10)
     Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin, timeout: timeout)

@@ -181,3 +181,39 @@ class TricklingServer
     client.close
   end
 end
+
+# A raw socket server that reads one request and writes whatever bytes the
+# test gives it, for responses no well-behaved server would send: a body cut
+# short, a status line that is not one, a gzip body that is not gzip.
+class RawServer
+  def initialize(response)
+    @server = TCPServer.new("127.0.0.1", 0)
+    @thread = Thread.new do
+      loop do
+        client = @server.accept
+        head = +""
+        head << client.readpartial(4096) until head.include?("\r\n\r\n")
+        client.write(response)
+        client.close
+      end
+    rescue IOError, SystemCallError
+      # Closed by #shutdown.
+    end
+  end
+
+  def origin
+    "http://127.0.0.1:#{@server.addr[1]}"
+  end
+
+  def self.run(response)
+    server = new(response)
+    yield server
+  ensure
+    server&.shutdown
+  end
+
+  def shutdown
+    @server.close
+    @thread.join(1)
+  end
+end

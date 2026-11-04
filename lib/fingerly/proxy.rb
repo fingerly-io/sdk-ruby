@@ -141,13 +141,16 @@ module Fingerly
     # @param max_body_bytes [Integer] larger request bodies are refused with 413
     # @param timeout [Numeric] how long to wait for Fingerly, in seconds
     # @param configure_http [Proc, nil] receives the +Net::HTTP+ before it connects
+    # @param logger [#warn, nil] receives one line per failed upstream call.
+    #   Without one, +rack.logger+ is used when the server provides it, and
+    #   standard error otherwise.
     # @raise [ConfigurationError] if a credential, path, limit or callback is
     #   invalid, or if the proxy is middleware without a path. A proxy is wired
     #   up once at start-up, where an error is natural to handle.
     def initialize(app = nil, client_ip:, proxy_key: nil, secret_key: nil,
                    path: nil, api_version: "v1", upstream: nil,
                    max_body_bytes: DEFAULT_MAX_BODY_BYTES, timeout: DEFAULT_TIMEOUT,
-                   configure_http: nil)
+                   configure_http: nil, logger: nil)
       raise ConfigurationError, "A Fingerly proxy key is required" if !proxy_key && !secret_key
       if proxy_key && secret_key
         raise ConfigurationError, "Pass proxy_key or deprecated secret_key, not both"
@@ -157,7 +160,12 @@ module Fingerly
       # take all of them from the application behind it.
       raise ConfigurationError, "path is required when the proxy is middleware" if app && !path
 
+      if logger && !logger.respond_to?(:warn)
+        raise ConfigurationError, "logger must respond to warn"
+      end
+
       @app = app
+      @logger = logger
       @client_ip = client_ip
       @uses_proxy_key = !proxy_key.nil?
       @key = proxy_key || secret_key
@@ -216,7 +224,11 @@ module Fingerly
       body = read_bounded(env["rack.input"])
       return refuse(413, "Payload Too Large") if body.nil?
 
-      forward(request, api_key, body)
+      forward(env, request, api_key, body)
+    rescue IOError, SystemCallError
+      # The visitor went away while the body was arriving. Nobody is left to
+      # read an answer, and there is nothing worth logging.
+      refuse(400, "Bad request")
     end
 
     private
@@ -232,16 +244,37 @@ module Fingerly
       refuse(404, "Not Found")
     end
 
-    def forward(request, api_key, body)
+    def forward(env, request, api_key, body)
       headers = upstream_headers(request, api_key)
       return refuse(500, "Internal Server Error") if headers.nil?
 
       # Both of the browser SDK's calls go to the one ingest URL, which tells
-      # them apart by their bodies.
+      # them apart by their bodies. The whole answer is read, within its cap,
+      # before anything is written back, so a response cut short upstream is
+      # a 502 rather than a truncated success.
       result = @transport.call(Net::HTTP::Post, @ingest, headers, body)
       relay(result)
-    rescue TimeoutError, ConnectionError
-      refuse(502, "Bad Gateway")
+    rescue TimeoutError => e
+      upstream_failed(env, 504, "Gateway timeout", e)
+    rescue Error => e
+      # Refused, reset, unresolvable, malformed, truncated, or over the cap.
+      upstream_failed(env, 502, "Bad gateway", e)
+    end
+
+    # Answers a failed upstream call and logs one line about it: no stack
+    # trace, nothing from the request, and nothing in the response that names
+    # Fingerly.
+    def upstream_failed(env, status, message, error)
+      log(env, "fingerly proxy: #{status} #{error.message}")
+      refuse(status, message)
+    end
+
+    def log(env, line)
+      logger = @logger || env["rack.logger"]
+      logger ? logger.warn(line) : warn(line)
+    rescue StandardError
+      # A broken logger must not turn a gateway error into a crash.
+      nil
     end
 
     # Decides which key to present upstream.

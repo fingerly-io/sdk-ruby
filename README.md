@@ -249,6 +249,16 @@ customer cookies and authorization headers never are. The proxy reports itself
 upstream as `ruby/0.1.0` in `x-fingerly-proxy-version`, which the dashboard
 shows per proxy.
 
+When Fingerly cannot be reached, the visitor gets a gateway error rather than
+your application's `500`: `504 Gateway timeout` when `timeout:` (5 seconds by
+default) passes, and `502 Bad gateway` for anything else, whether the
+connection was refused or reset, the name did not resolve, or the answer was
+malformed, cut short or over 4 MiB. The whole answer is read before anything
+is written back, so a truncated response is never relayed as a success. Each
+failure logs one line, without a stack trace, to `logger:` when you pass one,
+to `rack.logger` when your server provides it, and to standard error
+otherwise.
+
 Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining`
 and `retry-after` are relayed back, plus `cache-control: no-store` set by the
 proxy. A content blocker can match a response header by name, and an

@@ -380,10 +380,82 @@ class ProxyTest < Minitest::Test
     response = Rack::MockRequest.new(Rack::Lint.new(proxy))
                                 .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
-    assert_equal 502, response.status
+    assert_gateway_error 502, "Bad gateway", response
   end
 
-  def test_answers_bad_gateway_when_fingerly_stalls
+  # Upstream trouble of every kind is a gateway error with a short plain
+  # body, never the application's 500 and never a truncated success.
+  UPSTREAM_FAILURES = {
+    "a body cut short" =>
+      "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{\"a\":",
+    "a status line that is not one" => "garbage\r\n\r\n",
+    "a gzip body that is not gzip" =>
+      "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: 8\r\n\r\nnot gzip",
+    "a declared body over the cap" =>
+      "HTTP/1.1 200 OK\r\ncontent-length: #{(4 << 20) + 1}\r\n\r\n{}",
+    "a streamed body over the cap" =>
+      "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n#{" " * ((4 << 20) + 1)}"
+  }.freeze
+
+  def test_answers_bad_gateway_for_every_kind_of_upstream_failure
+    UPSTREAM_FAILURES.each do |label, raw|
+      RawServer.run(raw) do |server|
+        response = Rack::MockRequest.new(Rack::Lint.new(build(server.origin)))
+                                    .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+
+        assert_gateway_error 502, "Bad gateway", response, label
+      end
+    end
+  end
+
+  def test_logs_one_line_per_upstream_failure
+    lines = []
+    logger = Object.new
+    logger.define_singleton_method(:warn) { |line| lines << line }
+    proxy = Fingerly::Proxy.new(
+      proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9", logger: logger,
+      client_ip: ->(_r) { "203.0.113.7" }
+    )
+    Rack::MockRequest.new(Rack::Lint.new(proxy))
+                     .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+
+    assert_equal 1, lines.size
+    assert_match(/\Afingerly proxy: 502 .*ECONNREFUSED/, lines.first)
+    refute_includes lines.first, "\n"
+    refute_includes lines.first, PROXY_KEY
+  end
+
+  def test_uses_the_rack_logger_when_none_is_given
+    lines = []
+    logger = Object.new
+    logger.define_singleton_method(:warn) { |line| lines << line }
+    Rack::MockRequest.new(build("http://127.0.0.1:9")).post(
+      PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "rack.logger" => logger
+    )
+
+    assert_equal 1, lines.size
+  end
+
+  def test_refuses_a_logger_that_cannot_log
+    assert_raises(Fingerly::ConfigurationError) do
+      Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, logger: Object.new,
+                          client_ip: ->(_r) { "203.0.113.7" })
+    end
+  end
+
+  # A visitor who goes away mid-upload leaves nobody to answer; the proxy
+  # ends quietly instead of raising into the application.
+  def test_ends_quietly_when_the_visitor_disconnects_mid_body
+    input = Object.new
+    input.define_singleton_method(:read) { |*_args| raise EOFError, "client went away" }
+    env = Rack::MockRequest.env_for(PATH, method: "POST", "HTTP_X_API_KEY" => PUBLIC_KEY)
+    env["rack.input"] = input
+    status, = build("http://127.0.0.1:9").call(env)
+
+    assert_equal 400, status
+  end
+
+  def test_answers_gateway_timeout_when_fingerly_stalls
     handler = lambda do |_req, res|
       sleep 3
       res.status = 200
@@ -396,7 +468,7 @@ class ProxyTest < Minitest::Test
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
                                   .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
-      assert_equal 502, response.status
+      assert_gateway_error 504, "Gateway timeout", response
     end
   end
 
@@ -410,7 +482,7 @@ class ProxyTest < Minitest::Test
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
                                   .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
 
-      assert_equal 502, response.status
+      assert_equal 504, response.status
       assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
     end
   end
@@ -508,6 +580,14 @@ class ProxyTest < Minitest::Test
   end
 
   private
+
+  def assert_gateway_error(status, text, response, label = nil)
+    assert_equal status, response.status, label
+    assert_equal text, response.body, label
+    assert_equal "no-store", response.headers["cache-control"], label
+    assert_match %r{\Atext/plain}, response.headers["content-type"], label
+    refute_match(/fingerly/i, response.body, label)
+  end
 
   def build(upstream, app: nil, path: PATH, max_body_bytes: 1 << 20)
     Fingerly::Proxy.new(

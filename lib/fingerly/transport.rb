@@ -4,6 +4,7 @@ require "net/http"
 require "openssl"
 require "timeout"
 require "uri"
+require "zlib"
 
 module Fingerly
   # One HTTP exchange, bounded end to end.
@@ -40,8 +41,9 @@ module Fingerly
   class Transport
     include Redacted
 
-    # A response body is small; anything larger did not come from this API.
-    MAX_BODY_BYTES = 16 * 1024 * 1024
+    # A response body is small; anything larger did not come from this API,
+    # and is refused rather than buffered.
+    MAX_BODY_BYTES = 4 * 1024 * 1024
 
     # How long a pooled connection may live before it is reopened, so DNS is
     # asked again at least this often.
@@ -96,10 +98,13 @@ module Fingerly
     rescue DeadlineExceeded
       # perform has already discarded the interrupted connection.
       raise TimeoutError, "The Fingerly request timed out"
-    rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout => e
+    rescue Timeout::Error => e
+      # Net::OpenTimeout, ReadTimeout and WriteTimeout all derive from it.
       raise TimeoutError, "The Fingerly request timed out (#{e.class})"
-    rescue SocketError, IOError, SystemCallError, OpenSSL::SSL::SSLError,
-           Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError => e
+    rescue SocketError, IOError, SystemCallError, OpenSSL::OpenSSLError, Zlib::Error,
+           Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Net::ProtocolError => e
+      # Every network failure arrives as the SDK's own error, never as a raw
+      # runtime one. The class names the cause; nothing from the body does.
       raise ConnectionError, "Could not reach the Fingerly API (#{e.class})"
     end
 
@@ -225,21 +230,32 @@ module Fingerly
       # closing.
       result = nil
       http.request(request) do |response|
+        # Refused on the declared size before a byte is buffered, and on the
+        # real size while reading, whichever comes first.
+        too_large! if response.content_length.to_i > MAX_BODY_BYTES
         body = +""
         response.read_body do |chunk|
           body << chunk
-          raise Error, "Fingerly API returned more than #{MAX_BODY_BYTES} bytes" if
-            body.bytesize > MAX_BODY_BYTES
+          too_large! if body.bytesize > MAX_BODY_BYTES
 
           # Shrink the socket's own timeout to what is left of the deadline, so
           # a stalled body cannot outlive it.
           apply_timeouts(http, deadline)
         end
+        declared = response.content_length
+        if declared && body.bytesize != declared
+          raise ConnectionError, "The Fingerly API response was cut short"
+        end
+
         result = Result.new(
           status: response.code.to_i, headers: response.to_hash, body: body
         )
       end
       result
+    end
+
+    def too_large!
+      raise Error, "The Fingerly API returned more than #{MAX_BODY_BYTES} bytes"
     end
 
     # @raise [TimeoutError] when nothing is left of the deadline
@@ -281,6 +297,9 @@ module Fingerly
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = @uri.scheme == "https"
       http.max_retries = 0
+      # Net::HTTP accepts a body shorter than its content-length by default,
+      # which would pass a response cut short upstream on as complete.
+      http.ignore_eof = false
       # Net::HTTP reconnects by itself after this long idle; keep it in step
       # with the pool's own idea of a usable connection.
       http.keep_alive_timeout = IDLE_TIMEOUT
