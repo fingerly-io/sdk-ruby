@@ -152,6 +152,7 @@ module Fingerly
     SIGNATURE: Regexp
     TIMESTAMP: Regexp
     PREFIX: String
+    MAX_SIGNATURES: Integer
 
     def self.verify: (
       secret: String?,

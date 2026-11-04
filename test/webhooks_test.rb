@@ -24,6 +24,13 @@ class WebhooksTest < Minitest::Test
     assert verify(signature: "#{sign("whsec_previous")}, #{sign(SECRET)}")
   end
 
+  def test_reads_at_most_thirty_two_signatures
+    bogus = "sha256=#{"0" * 64}"
+
+    assert verify(signature: (([bogus] * 31) + [sign(SECRET)]).join(","))
+    refute verify(signature: (([bogus] * 32) + [sign(SECRET)]).join(","))
+  end
+
   def test_refuses_a_tampered_payload
     refute verify(payload: "#{PAYLOAD} ", signature: sign(SECRET))
   end

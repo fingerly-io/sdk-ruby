@@ -170,7 +170,8 @@ Verify the exact raw bytes before parsing them. `request.raw_post` is those
 bytes; a body reconstructed from parsed parameters is not. Signatures cover
 the timestamp and body. The default replay tolerance is five minutes; persist
 processed `id` values to deduplicate deliveries. During signing-secret
-rotation, any matching signature in the comma-separated header is accepted.
+rotation, any matching signature in the comma-separated header is accepted;
+only the first 32 are read.
 Malformed or missing input is a false result, never an exception, and a body
 that is not valid UTF-8 verifies rather than raising on concatenation.
 

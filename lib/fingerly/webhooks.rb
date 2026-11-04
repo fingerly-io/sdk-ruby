@@ -21,6 +21,10 @@ module Fingerly
 
     PREFIX = "sha256="
 
+    # Signatures read from one header. A rotation needs two; anything beyond
+    # this is not from Fingerly, and is not worth comparing one by one.
+    MAX_SIGNATURES = 32
+
     module_function
 
     # Reports whether a delivery came from Fingerly and is recent.
@@ -42,7 +46,7 @@ module Fingerly
     # @param timestamp [String] the +x-fingerly-timestamp+ header
     # @param signature [String] the +x-fingerly-signature+ header, which
     #   carries several comma-separated signatures during a secret rotation.
-    #   Any one matching is accepted.
+    #   Any one of the first {MAX_SIGNATURES} matching is accepted.
     # @param tolerance [Numeric] the replay window in seconds
     # @param now [Time, nil] the instant to measure freshness against.
     #   Override it only in tests.
@@ -57,7 +61,10 @@ module Fingerly
       return false unless fresh?(timestamp, now, tolerance)
 
       expected = sign(secret, timestamp, payload)
-      signature.split(",").any? { |candidate| matches?(candidate, expected) }
+      # The limit keeps a huge header from being split in full; whatever lies
+      # past the last candidate is ignored rather than compared.
+      candidates = signature.split(",", MAX_SIGNATURES + 1).first(MAX_SIGNATURES)
+      candidates.any? { |candidate| matches?(candidate, expected) }
     end
 
     # Parses a delivery's envelope.
