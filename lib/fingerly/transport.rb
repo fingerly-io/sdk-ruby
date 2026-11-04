@@ -18,16 +18,19 @@ module Fingerly
   # otherwise hold the call for as long as it liked. Under a fiber scheduler
   # Timeout hands the wait to the scheduler.
   #
-  # Connections are kept per thread. Net::HTTP is not safe to share between
-  # threads, and a Ruby application server runs one request per thread, so a
-  # thread-local connection is reused exactly as far as it is safe to and no
-  # further. They are recycled by age as well, because a connection held for
-  # the life of a process pins whatever DNS answered first and will eventually
-  # be closed by the other end without telling anybody.
+  # Idle connections live in one pool per process, keyed by destination.
+  # Net::HTTP cannot be used by two threads or fibers at once, so each exchange
+  # checks a connection out and hands it back when it is done. A thread-local
+  # or fiber-local connection would be reused only by the same thread or
+  # fiber: under Falcon, which runs each client connection in its own fiber,
+  # that meant a new upstream socket per visitor, stranded until garbage
+  # collection. A pool shared by everything reuses a socket whoever asks next.
   #
-  # The pool is keyed by destination rather than by transport instance, so an
-  # application that builds a client per request reuses one socket rather than
-  # stranding a new one on the thread every time.
+  # Connections are recycled by age, because one held for the life of a
+  # process pins whatever DNS answered first, and dropped after sitting idle,
+  # because the other end will eventually close it without telling anybody.
+  # Keying by destination rather than by transport instance means an
+  # application that builds a client per request still reuses sockets.
   #
   # Nothing here needs an asynchronous twin. Net::HTTP has honoured the fiber
   # scheduler since Ruby 3.0, so under Falcon or the async gem these same
@@ -40,8 +43,19 @@ module Fingerly
     # A response body is small; anything larger did not come from this API.
     MAX_BODY_BYTES = 16 * 1024 * 1024
 
-    # How long a pooled connection may live before it is reopened.
+    # How long a pooled connection may live before it is reopened, so DNS is
+    # asked again at least this often.
     RECYCLE_AFTER = 60
+
+    # How long a connection may sit idle in the pool and still be reused. Well
+    # under the idle timeouts servers and load balancers apply, so a reused
+    # socket is one the other end has not yet given up on.
+    IDLE_TIMEOUT = 15
+
+    # Idle connections kept per destination. Enough that a burst of a few
+    # hundred concurrent requests hands its sockets back rather than closing
+    # them; never more open at rest than this.
+    MAX_IDLE = 256
 
     Result = Struct.new(:status, :headers, :body, keyword_init: true)
 
@@ -80,8 +94,7 @@ module Fingerly
         perform(request, deadline: now + @timeout, idempotent: idempotent)
       end
     rescue DeadlineExceeded
-      # Interrupted mid-exchange, the connection is in no state to reuse.
-      close
+      # perform has already discarded the interrupted connection.
       raise TimeoutError, "The Fingerly request timed out"
     rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout => e
       raise TimeoutError, "The Fingerly request timed out (#{e.class})"
@@ -90,10 +103,78 @@ module Fingerly
       raise ConnectionError, "Could not reach the Fingerly API (#{e.class})"
     end
 
-    # Closes this thread's connection, if it has one.
+    # Closes the idle connections kept for this destination.
     def close
-      http = pool[@pool_key]&.first
-      discard(http) if http
+      Transport.drain(@pool_key).each { |entry| discard(entry.first) }
+    end
+
+    # One entry per idle connection: the Net::HTTP, when it was opened, and
+    # when it was last handed back.
+    Idle = Struct.new(:http, :opened_at, :released_at)
+
+    @idle = {}
+    @lock = Mutex.new
+    @pid = Process.pid
+
+    class << self
+      # @api private
+      # @return [Array(Idle, Array<Idle>)] the most recently used usable
+      #   connection, or nil, and the stale ones the caller must close
+      def checkout(key, now)
+        @lock.synchronize do
+          list = idle_for(key)
+          stale = prune(list, now)
+          [list.pop, stale]
+        end
+      end
+
+      # @api private
+      # @return [Array(Boolean, Array<Idle>)] whether the pool kept it, and the
+      #   stale ones the caller must close
+      def checkin(key, entry, now)
+        @lock.synchronize do
+          list = idle_for(key)
+          stale = prune(list, now)
+          next [false, stale] if list.size >= MAX_IDLE
+
+          list.push(entry)
+          [true, stale]
+        end
+      end
+
+      # @api private
+      def drain(key)
+        @lock.synchronize { idle_for(key).slice!(0..) }
+      end
+
+      # @api private
+      # @return [Integer] idle connections held for a destination
+      def idle_count(key)
+        @lock.synchronize { idle_for(key).size }
+      end
+
+      private
+
+      def idle_for(key)
+        # A forked child must never write to a socket its parent also holds.
+        # Dropping the references closes nothing the parent still uses.
+        unless @pid == Process.pid
+          @idle = {}
+          @pid = Process.pid
+        end
+        @idle[key] ||= []
+      end
+
+      # The oldest entries sit at the front; take them while they are stale.
+      def prune(list, now)
+        stale = []
+        stale << list.shift while list.first && stale?(list.first, now)
+        stale
+      end
+
+      def stale?(entry, now)
+        now - entry.released_at > IDLE_TIMEOUT || now - entry.opened_at > RECYCLE_AFTER
+      end
     end
 
     private
@@ -103,10 +184,11 @@ module Fingerly
     end
 
     def perform(request, deadline:, idempotent:)
-      http, reused = connection
+      entry, reused = connection
       begin
-        exchange(http, request, deadline)
+        result = exchange(entry.http, request, deadline)
       rescue IOError, SystemCallError, Net::HTTPBadResponse
+        discard(entry.http)
         # A connection the other end closed while it was idle fails on its
         # next use. Reopening and sending again is recovery, not a retry, so
         # it happens only for a reused connection and only for a request that
@@ -114,10 +196,21 @@ module Fingerly
         # a slow server is not a broken connection.
         raise unless reused && idempotent
 
-        discard(http)
-        fresh, = connection
-        exchange(fresh, request, deadline)
+        entry = fresh
+        begin
+          result = exchange(entry.http, request, deadline)
+        rescue Exception # rubocop:disable Lint/RescueException
+          discard(entry.http)
+          raise
+        end
+      rescue Exception # rubocop:disable Lint/RescueException
+        # Anything else, the overall deadline included, leaves the connection
+        # in an unknown state, so it is never handed to another caller.
+        discard(entry.http)
+        raise
       end
+      release(entry)
+      result
     end
 
     def exchange(http, request, deadline)
@@ -159,29 +252,38 @@ module Fingerly
       http.write_timeout = left
     end
 
-    # @return [Array(Net::HTTP, Boolean)] the connection and whether it existed
+    # @return [Array(Idle, Boolean)] a connection and whether it was reused
     def connection
-      http, opened_at = pool[@pool_key]
-      if http && (!http.started? || now - opened_at > RECYCLE_AFTER)
-        discard(http)
-        http = nil
-      end
-      return [http, true] if http
+      loop do
+        entry, stale = Transport.checkout(@pool_key, now)
+        stale.each { |old| discard(old.http) }
+        return [fresh, false] if entry.nil?
+        return [entry, true] if entry.http.started?
 
-      http = build
-      pool[@pool_key] = [http, now]
-      [http, false]
+        discard(entry.http)
+      end
     end
 
-    # Where this thread keeps its open connections, keyed by destination.
-    def pool
-      Thread.current[:fingerly_connections] ||= {}
+    def release(entry)
+      return discard(entry.http) unless entry.http.started?
+
+      entry.released_at = now
+      kept, stale = Transport.checkin(@pool_key, entry, now)
+      stale.each { |old| discard(old.http) }
+      discard(entry.http) unless kept
+    end
+
+    def fresh
+      Idle.new(build, now, now)
     end
 
     def build
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = @uri.scheme == "https"
       http.max_retries = 0
+      # Net::HTTP reconnects by itself after this long idle; keep it in step
+      # with the pool's own idea of a usable connection.
+      http.keep_alive_timeout = IDLE_TIMEOUT
       @configure_http&.call(http)
       http
     end
@@ -190,8 +292,6 @@ module Fingerly
       http.finish if http.started?
     rescue IOError
       # Already closed by the other end; nothing left to release.
-    ensure
-      pool.delete(@pool_key)
     end
 
     def now

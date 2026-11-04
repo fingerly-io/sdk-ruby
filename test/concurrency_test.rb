@@ -51,10 +51,9 @@ class ConcurrencyTest < Minitest::Test
     end
   end
 
-  # Net::HTTP cannot be shared, so every fiber and every thread has to get its
-  # own connection. Thread#[] is fiber-local storage, which is exactly that:
-  # one per fiber under a scheduler, one per thread otherwise.
-  def test_each_fiber_gets_its_own_connection
+  # Net::HTTP cannot be shared, so fibers running at the same time each need a
+  # connection of their own. Afterwards the pool holds all of them.
+  def test_concurrent_fibers_each_get_their_own_connection
     FakeAPI.run(slow_handler) do |api|
       built = Queue.new
       fingerly = Fingerly::Client.new(
@@ -67,6 +66,44 @@ class ConcurrencyTest < Minitest::Test
       end
 
       assert_equal CALLS, built.size
+      fingerly.close
+    end
+  end
+
+  # Falcon runs each client connection in a fiber of its own, and a fiber
+  # that ends must hand its socket back. Twenty fibers one after another, as
+  # twenty visitors would be, share one upstream connection.
+  def test_fibers_one_after_another_share_one_connection
+    FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
+      built = Queue.new
+      fingerly = Fingerly::Client.new(
+        secret_key: SECRET_KEY, endpoint: api.origin,
+        configure_http: ->(_http) { built << :one }
+      )
+
+      Async do
+        20.times { Async { fingerly.events.get("r1") }.wait }
+      end
+
+      assert_equal 20, api.requests.size
+      assert_equal 1, built.size
+      fingerly.close
+    end
+  end
+
+  # Puma may start and retire threads; a thread that ends hands its socket on.
+  def test_threads_one_after_another_share_one_connection
+    FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
+      built = Queue.new
+      fingerly = Fingerly::Client.new(
+        secret_key: SECRET_KEY, endpoint: api.origin,
+        configure_http: ->(_http) { built << :one }
+      )
+
+      5.times { Thread.new { fingerly.events.get("r1") }.join }
+
+      assert_equal 1, built.size
+      fingerly.close
     end
   end
 

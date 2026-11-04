@@ -57,13 +57,17 @@ timeouts to whatever is left of the deadline before each step, and one
 tight rather than a multiple of the timeout. Under a fiber scheduler that
 `Timeout` is the scheduler's own.
 
-Connections are kept per thread, and per fiber under a scheduler, which is
-what `Thread#[]` already means. `Net::HTTP` cannot be shared between them, so
-this reuses a connection exactly as far as it is safe to and no further. They
-are recycled by age as well: a connection held for the life of a process pins
-whatever DNS answered first. A connection the other end closed while it was
-idle is reopened and the request sent again, but only for `GET`, because a
-`POST` that may already have arrived must never be sent twice.
+Idle connections are kept in one pool per process and destination, shared by
+every client and proxy in it. `Net::HTTP` cannot be used by two threads or
+fibers at once, so each exchange checks a connection out and hands it back
+when it is done: a burst of a few hundred concurrent requests reuses its
+sockets rather than opening one each, and a fiber that ends (Falcon runs one
+per client connection) returns its socket instead of stranding it. At most
+256 idle connections are kept per destination. A connection is reopened after
+60 seconds, so DNS is asked again, and dropped after 15 seconds idle. One the
+other end closed while it was idle is reopened and the request sent again,
+but only for `GET`, because a `POST` that may already have arrived must never
+be sent twice. A forked worker starts with an empty pool.
 
 ## Errors
 
