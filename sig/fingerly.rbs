@@ -19,8 +19,15 @@ module Fingerly
     attr_reader code: String?
     attr_reader details: untyped
     attr_reader request_id: String?
+    attr_reader retry_after: Integer?
 
-    def initialize: (status: Integer, ?code: String?, ?details: untyped, ?request_id: String?) -> void
+    def initialize: (
+      status: Integer,
+      ?code: String?,
+      ?details: untyped,
+      ?request_id: String?,
+      ?retry_after: Integer?
+    ) -> void
     def event_not_found?: () -> bool
   end
 

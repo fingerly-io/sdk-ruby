@@ -115,8 +115,26 @@ module Fingerly
         # Redacting the rendered JSON covers nested values without walking the
         # tree.
         details: error.key?("details") ? redact_tree(error["details"]) : nil,
-        request_id: redact(envelope["request_id"])
+        request_id: redact(envelope["request_id"] || header(result, "x-request-id")),
+        retry_after: retry_after(header(result, "retry-after"))
       )
+    end
+
+    def header(result, name)
+      value = Array(result.headers[name]).first
+      value.is_a?(String) && !value.empty? ? value : nil
+    end
+
+    # Retry-After is either whole seconds or an HTTP date.
+    #
+    # @return [Integer, nil] seconds from now, never negative
+    def retry_after(value)
+      return nil if value.nil?
+      return Integer(value, 10) if value.match?(/\A\d{1,10}\z/)
+
+      [(Time.httpdate(value) - Time.now).ceil, 0].max
+    rescue ArgumentError
+      nil
     end
 
     def error_envelope(body)

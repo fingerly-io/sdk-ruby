@@ -86,9 +86,14 @@ rescue Fingerly::APIError => e
 end
 ```
 
-`Fingerly::APIError` carries `status`, and optional `code`, `details` and
-`request_id`. The secret key is stripped from all three, and the response body
-is never echoed. `event_not_found?` names the one retryable read failure, so
+Every response outside 2xx, a redirect included, raises `Fingerly::APIError`.
+It carries `status`, and optional `code`, `details`, `request_id` and
+`retry_after`. The secret key is stripped from the first three, and the
+response body is never echoed. `request_id` falls back to the `x-request-id`
+header when the body is not an error envelope. `retry_after` is the
+`Retry-After` header in whole seconds, from either of its forms, or `nil`
+when there was none: on a `429`, wait that long before reading again. The
+client never retries by itself. `event_not_found?` names the one retryable read failure, so
 it needs no status-and-code check of your own. A deadline raises
 `Fingerly::TimeoutError`; an unreachable API raises
 `Fingerly::ConnectionError`.

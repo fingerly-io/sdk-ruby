@@ -101,6 +101,53 @@ class ClientTest < Minitest::Test
     end
   end
 
+  def test_reports_retry_after_in_seconds
+    {
+      "7" => 7,
+      "0" => 0,
+      (Time.now + 30).httpdate => (29..31),
+      (Time.now - 30).httpdate => 0,
+      "soon" => nil,
+      "-5" => nil,
+      nil => nil
+    }.each do |header, expected|
+      handler = lambda do |_req, res|
+        res.status = 429
+        res["content-type"] = "application/json"
+        res["retry-after"] = header if header
+        res.body = '{"error":{"code":"rate_limited"}}'
+      end
+      FakeAPI.run(handler) do |api|
+        error = assert_raises(Fingerly::APIError) { client(api).events.get("r1") }
+
+        assert_equal 429, error.status
+        if expected.is_a?(Range)
+          assert_includes expected, error.retry_after, header
+        elsif expected.nil?
+          assert_nil error.retry_after, header.inspect
+        else
+          assert_equal expected, error.retry_after, header
+        end
+      end
+    end
+  end
+
+  # The trace id comes from the envelope, or from the response header when
+  # the body is not one, as an error page from a proxy in between would be.
+  def test_reports_the_request_id_from_the_header_when_the_body_has_none
+    handler = lambda do |_req, res|
+      res.status = 502
+      res["x-request-id"] = "req_from_header"
+      res.body = "<html>bad gateway</html>"
+    end
+    FakeAPI.run(handler) do |api|
+      error = assert_raises(Fingerly::APIError) { client(api).events.get("r1") }
+
+      assert_equal "req_from_header", error.request_id
+      refute_includes error.message, "bad gateway"
+    end
+  end
+
   def test_reports_the_status_when_the_error_body_is_not_json
     handler = lambda do |_req, res|
       res.status = 503

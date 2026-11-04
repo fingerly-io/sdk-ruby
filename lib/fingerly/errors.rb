@@ -42,12 +42,18 @@ module Fingerly
     #   requests
     attr_reader :request_id
 
+    # @return [Integer, nil] seconds to wait before trying again, from the
+    #   +Retry-After+ header, or nil when the response carried none. Sent with
+    #   429 and some 503 answers; the SDK never retries by itself.
+    attr_reader :retry_after
+
     # @api private
-    def initialize(status:, code: nil, details: nil, request_id: nil)
+    def initialize(status:, code: nil, details: nil, request_id: nil, retry_after: nil)
       @status = status
       @code = code
       @details = details
       @request_id = request_id
+      @retry_after = retry_after
       described = "Fingerly API returned HTTP #{status}"
       super(code ? "#{described} (#{code})" : described)
     end
