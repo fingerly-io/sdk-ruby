@@ -44,14 +44,18 @@ plain threads.
 
 ## Deadlines
 
-`timeout:` bounds the whole exchange, including receiving the body.
+`timeout:` bounds the whole exchange: connecting, sending, the response
+headers and the body.
 
 That takes care on this platform. `Net::HTTP` has `open_timeout`,
 `read_timeout` and `write_timeout`, but each bounds a single operation: a
 server that answers and then sends one byte a second would satisfy all three
-forever. The client tracks a deadline across the exchange and shrinks the
-socket's own read timeout to whatever is left of it before each chunk, so the
-bound is tight rather than a multiple of the timeout.
+forever, and so would one that sends a header line a second, because each
+header line gets the full read timeout. The client shrinks the socket's own
+timeouts to whatever is left of the deadline before each step, and one
+`Timeout` around the whole exchange covers the header lines, so the bound is
+tight rather than a multiple of the timeout. Under a fiber scheduler that
+`Timeout` is the scheduler's own.
 
 Connections are kept per thread, and per fiber under a scheduler, which is
 what `Thread#[]` already means. `Net::HTTP` cannot be shared between them, so

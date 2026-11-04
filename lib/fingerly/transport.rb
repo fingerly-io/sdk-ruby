@@ -2,6 +2,7 @@
 
 require "net/http"
 require "openssl"
+require "timeout"
 require "uri"
 
 module Fingerly
@@ -9,10 +10,13 @@ module Fingerly
   #
   # Net::HTTP has +open_timeout+, +read_timeout+ and +write_timeout+, but each
   # bounds a single operation: a server that answers and then dribbles a byte
-  # every second would satisfy all three forever. The deadline here covers the
-  # whole exchange, and the socket's read timeout is shrunk to whatever is left
-  # of it before each chunk, so the bound is tight rather than a multiple of
-  # the timeout.
+  # every second would satisfy all three forever. The socket's timeouts are
+  # shrunk to whatever is left of the deadline before each operation and each
+  # body chunk, and one Timeout around the whole exchange covers what those
+  # cannot reach: Net::HTTP reads the status line and every header line with
+  # the full read timeout each, so a server trickling header lines would
+  # otherwise hold the call for as long as it liked. Under a fiber scheduler
+  # Timeout hands the wait to the scheduler.
   #
   # Connections are kept per thread. Net::HTTP is not safe to share between
   # threads, and a Ruby application server runs one request per thread, so a
@@ -72,7 +76,13 @@ module Fingerly
 
       # One budget for the whole call, so reopening a closed connection cannot
       # quietly buy a second timeout's worth of time.
-      perform(request, deadline: now + @timeout, idempotent: idempotent)
+      Timeout.timeout(@timeout, DeadlineExceeded) do
+        perform(request, deadline: now + @timeout, idempotent: idempotent)
+      end
+    rescue DeadlineExceeded
+      # Interrupted mid-exchange, the connection is in no state to reuse.
+      close
+      raise TimeoutError, "The Fingerly request timed out"
     rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout => e
       raise TimeoutError, "The Fingerly request timed out (#{e.class})"
     rescue SocketError, IOError, SystemCallError, OpenSSL::SSL::SSLError,
@@ -187,5 +197,9 @@ module Fingerly
     def now
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
+
+    # Raised by the overall deadline; never escapes {#call}.
+    class DeadlineExceeded < StandardError; end
+    private_constant :DeadlineExceeded
   end
 end

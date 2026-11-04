@@ -3,6 +3,7 @@
 require "minitest/autorun"
 require "webrick"
 require "json"
+require "socket"
 require "fingerly"
 
 # One request a fake API received, kept for assertions.
@@ -125,5 +126,58 @@ module Fixtures
 
   def webhooks
     document.fetch("webhooks")
+  end
+end
+
+# A raw socket server that answers with a status line and then one header
+# line at a time, slowly, as a misbehaving upstream or middlebox might.
+#
+# WEBrick cannot do this: it writes the header block in one go. Net::HTTP
+# reads each header line with its full read timeout, so this is what proves a
+# deadline covers the headers and not only the body.
+class TricklingServer
+  def initialize(interval: 0.2, lines: 50)
+    @server = TCPServer.new("127.0.0.1", 0)
+    @thread = Thread.new do
+      loop do
+        socket = @server.accept
+        Thread.new(socket) { |client| trickle(client, interval, lines) }
+      end
+    rescue IOError
+      # Closed by #shutdown.
+    end
+  end
+
+  def origin
+    "http://127.0.0.1:#{@server.addr[1]}"
+  end
+
+  def shutdown
+    @server.close
+    @thread.join(1)
+  end
+
+  def self.run(**)
+    server = new(**)
+    yield server
+  ensure
+    server&.shutdown
+  end
+
+  private
+
+  def trickle(client, interval, lines)
+    head = +""
+    head << client.readpartial(4096) until head.include?("\r\n\r\n")
+    client.write("HTTP/1.1 200 OK\r\n")
+    lines.times do |i|
+      sleep interval
+      client.write("x-pad-#{i}: a\r\n")
+    end
+    client.write("content-type: application/json\r\ncontent-length: 2\r\n\r\n{}")
+  rescue IOError, SystemCallError
+    # The client gave up, which is the point.
+  ensure
+    client.close
   end
 end

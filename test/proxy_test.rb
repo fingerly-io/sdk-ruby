@@ -400,6 +400,21 @@ class ProxyTest < Minitest::Test
     end
   end
 
+  def test_the_deadline_covers_the_upstream_headers
+    TricklingServer.run(interval: 0.2, lines: 50) do |server|
+      proxy = Fingerly::Proxy.new(
+        proxy_key: PROXY_KEY, path: PATH, upstream: server.origin, timeout: 0.75,
+        client_ip: ->(_r) { "203.0.113.7" }
+      )
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
+                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+
+      assert_equal 502, response.status
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
+    end
+  end
+
   # The trap this middleware exists to avoid. Reading the body to find out
   # whether a request is Fingerly's would leave the application nothing to
   # read: under Rack 3 the input stream is not required to rewind.

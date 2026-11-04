@@ -143,6 +143,21 @@ class ClientTest < Minitest::Test
     end
   end
 
+  # Net::HTTP reads the status line and each header line with its full read
+  # timeout, so a server trickling header lines every 0.2 s would hold a 0.75 s
+  # deadline for the ten seconds it takes to send fifty of them.
+  def test_the_deadline_covers_receiving_the_headers
+    TricklingServer.run(interval: 0.2, lines: 50) do |server|
+      fingerly = Fingerly::Client.new(
+        secret_key: SECRET_KEY, endpoint: server.origin, timeout: 0.75
+      )
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      assert_raises(Fingerly::TimeoutError) { fingerly.events.get("r1") }
+
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
+    end
+  end
+
   def test_does_not_follow_a_redirect
     handler = lambda do |_req, res|
       res.status = 302
