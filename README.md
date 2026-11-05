@@ -51,6 +51,13 @@ for at most `timeout:`. That is what Puma and Unicorn expect. Do not call the
 client from an event loop that is not a fiber scheduler, such as an
 EventMachine reactor: there it would stall every connection the loop serves.
 
+Size the thread pool for the slow case, not the average one: while Fingerly is
+slow, every proxied request holds its thread for the whole `timeout:`. At 100
+proxied requests a second with 1% of them running into a 5 second timeout, that
+is 5 threads busy on average, before any fast request is served. Run more
+threads than that across your Puma or Unicorn workers, lower `timeout:` for the
+proxy, or serve with Falcon, where a waiting call holds no thread.
+
 ## Deadlines
 
 `timeout:` bounds the whole exchange: connecting, sending, the response
