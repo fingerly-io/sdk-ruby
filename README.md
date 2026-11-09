@@ -1,8 +1,7 @@
 # fingerly-ruby
 
 Server-side event reads, webhook verification and a same-origin proxy for
-Ruby. Version 0.1.0 is prepared for release; the repository is private and
-nothing has been published to RubyGems.
+Ruby.
 
 ```ruby
 gem "fingerly", "~> 0.1"
@@ -390,9 +389,8 @@ The vendored synthetic contract snapshot makes tests independent of sibling
 repositories. Its hashes are checked by `ContractTest`, so there is no
 separate check step. Never put production secrets in fixtures.
 
-The gemspec sets `allowed_push_host` to an unresolvable host. Nothing here is
-published yet, and a private SDK reaching a public registry is not a mistake
-anybody can take back.
+The gemspec sets `allowed_push_host` to RubyGems, so a push to any other host
+is refused.
 
 ## Source structure
 

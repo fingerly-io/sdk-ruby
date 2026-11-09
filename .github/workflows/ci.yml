@@ -49,17 +49,16 @@ jobs:
       - name: no runtime dependencies
         run: |
           ruby -rrubygems/package -e '
-            spec = Gem::Package.new("fingerly-0.1.0.gem").spec
+            spec = Gem::Package.new(Dir["fingerly-*.gem"].fetch(0)).spec
             unless spec.runtime_dependencies.empty?
               abort("the gem declares runtime dependencies: #{spec.runtime_dependencies}")
             end
             unless spec.required_ruby_version.to_s.include?(">= 3.2")
               abort("the supported Ruby floor moved: #{spec.required_ruby_version}")
             end
-            # Nothing is published yet; a private SDK reaching RubyGems is not
-            # a mistake anybody can take back.
+            # The gem may only ever be pushed to RubyGems itself.
             host = spec.metadata["allowed_push_host"]
-            abort("allowed_push_host is #{host.inspect}") if host.to_s.include?("rubygems.org")
+            abort("allowed_push_host is #{host.inspect}") unless host == "https://rubygems.org"
             puts "gem declares no runtime dependencies"
           '
       - uses: actions/upload-artifact@v4

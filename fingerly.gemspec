@@ -31,9 +31,8 @@ Gem::Specification.new do |spec|
     "documentation_uri" => "https://docs.fingerly.io/docs/sdks/ruby",
     "source_code_uri" => "https://github.com/fingerly-io/sdk-ruby",
     "rubygems_mfa_required" => "true",
-    # Nothing here is published yet, and a private SDK reaching a public
-    # registry is not a mistake anybody can take back.
-    "allowed_push_host" => "https://rubygems.invalid"
+    # A push to any other host is refused.
+    "allowed_push_host" => "https://rubygems.org"
   }
 
   spec.license = "Apache-2.0"
