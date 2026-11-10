@@ -2,5 +2,5 @@
 
 module Fingerly
   # The SDK version, reported to the API on every request.
-  VERSION = "0.1.0"
+  VERSION = "0.1.1"
 end

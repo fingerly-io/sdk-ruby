@@ -1,8 +1,17 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1
 
-First release, not yet published.
+- Security: `Fingerly::Client#events.get` now refuses the request ids `.`
+  and `..` as well as the empty id, raising `Fingerly::ConfigurationError`
+  before any request is sent. Escaping left them as dot segments, so `..`
+  addressed a route above `/events` with the secret key attached and `.`
+  read the event list, which a caller could take for an event. The id
+  usually comes from the browser, so upgrade if you pass it through.
+
+## 0.1.0
+
+First release.
 
 - Event reads (`Fingerly::Client#events`) with one deadline over the whole
   exchange: connecting, sending, the response headers and the body.

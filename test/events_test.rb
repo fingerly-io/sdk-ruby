@@ -67,11 +67,24 @@ class EventsTest < Minitest::Test
     server&.close
   end
 
-  def test_refuses_an_empty_request_id
-    FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
-      assert_raises(Fingerly::ConfigurationError) { client(api).events.get("") }
+  # "." would read the event list as if it were an event, and ".." would
+  # address a route above /events with the secret key attached.
+  def test_refuses_an_empty_or_dot_segment_request_id
+    ["", ".", ".."].each do |id|
+      FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
+        error = assert_raises(Fingerly::ConfigurationError, id.inspect) { client(api).events.get(id) }
 
-      assert_empty api.requests
+        assert_equal "request_id is not a Fingerly request id", error.message
+        assert_empty api.requests, id.inspect
+      end
+    end
+  end
+
+  def test_accepts_a_request_id_with_a_dot_inside
+    FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
+      client(api).events.get("a.b")
+
+      assert_equal "/api/v1/events/a.b", api.requests.first.raw_uri
     end
   end
 

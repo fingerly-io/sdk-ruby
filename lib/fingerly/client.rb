@@ -187,7 +187,12 @@ module Fingerly
     #   past retention.
     # @raise [TimeoutError] if the request exceeds the client timeout
     def get(request_id)
-      raise ConfigurationError, "request_id is required" if request_id.to_s.empty?
+      # URL parsers resolve a dot segment even when it is percent-encoded, so
+      # escaping cannot keep these in the path: "." and the empty id would name
+      # the list route, and ".." a route above it, secret key attached.
+      if ["", ".", ".."].include?(request_id.to_s)
+        raise ConfigurationError, "request_id is not a Fingerly request id"
+      end
 
       Event.new(@client.get("/events/#{Events.escape(request_id)}"))
     end
