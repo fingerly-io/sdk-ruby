@@ -57,6 +57,12 @@ module Fingerly
       return false unless secret.is_a?(String) && !secret.empty?
       return false unless payload.is_a?(String)
       return false unless timestamp.is_a?(String) && signature.is_a?(String)
+
+      # Header values are whatever the sender wrote. As bytes, a value that is
+      # not valid in its encoding simply fails to match, where as a string it
+      # would raise from the regular expressions below.
+      timestamp = timestamp.b
+      signature = signature.b
       # Check freshness before spending an HMAC on an obvious replay.
       return false unless fresh?(timestamp, now, tolerance)
 

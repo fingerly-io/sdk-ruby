@@ -44,6 +44,25 @@ class PoolTest < Minitest::Test
     assert_equal Fingerly::Transport::MAX_IDLE, Fingerly::Transport.idle_count(KEY)
   end
 
+  # A client built per request with an inline configure_http is a new key each
+  # time, and nothing would ever check that key out again.
+  def test_a_destination_nobody_returns_to_gives_its_connections_up
+    abandoned = [:pool_test_abandoned, Object.new.object_id].freeze
+    entry = idle_entry(opened_at: 0, released_at: 0)
+    # Other tests leave a real monotonic reading here; this one counts from 0.
+    Fingerly::Transport.instance_variable_set(:@swept_at, nil)
+    Fingerly::Transport.checkin(abandoned, entry, 0)
+    later = Fingerly::Transport::IDLE_TIMEOUT + 1
+
+    fresh = idle_entry(opened_at: later, released_at: later)
+    _kept, stale = Fingerly::Transport.checkin(KEY, fresh, later)
+
+    assert_includes stale, entry
+    refute Fingerly::Transport.instance_variable_get(:@idle).key?(abandoned)
+  ensure
+    Fingerly::Transport.instance_variable_set(:@swept_at, nil)
+  end
+
   # A forked worker must not write to sockets its parent also holds.
   def test_a_forked_child_starts_with_an_empty_pool
     skip "fork is unavailable" unless Process.respond_to?(:fork)

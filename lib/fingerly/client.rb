@@ -7,9 +7,9 @@ require "time"
 module Fingerly
   # Reads events for one organization and environment.
   #
-  # Build one and reuse it: it keeps a connection per thread and is safe to
-  # share. Secret keys and webhook secrets belong in server-side code only; a
-  # browser must never see either.
+  # Build one and reuse it: it is safe to share between threads and fibers,
+  # and connections come from one pool per process. Secret keys and webhook
+  # secrets belong in server-side code only; a browser must never see either.
   #
   #   fingerly = Fingerly::Client.new(secret_key: ENV.fetch("FINGERLY_SECRET_KEY"))
   #   event = fingerly.events.get(request_id)
@@ -57,7 +57,8 @@ module Fingerly
       freeze
     end
 
-    # Releases this thread's connection to Fingerly.
+    # Closes the idle connections to this client's destination, which every
+    # client and proxy in the process shares.
     #
     # Reusing the client afterwards simply opens another one, so this is for a
     # script that is finished rather than something a server needs to call.
@@ -225,9 +226,9 @@ module Fingerly
     #
     # @api private
     def self.escape(value)
-      value.to_s.gsub(/[^A-Za-z0-9\-._~]/) do |char|
-        char.bytes.map { |byte| format("%%%02X", byte) }.join
-      end
+      # Byte by byte, so an id that is not valid UTF-8 is escaped like any
+      # other rather than raising from the regular expression.
+      value.to_s.b.gsub(/[^A-Za-z0-9\-._~]/n) { |byte| format("%%%02X", byte.ord) }
     end
 
     # The API accepts RFC 3339 only, and reads it as an absolute instant.
@@ -236,7 +237,9 @@ module Fingerly
     def self.instant(value)
       raise ConfigurationError, "from and to must be Time values" unless value.is_a?(Time)
 
-      value.utc.iso8601(3)
+      # getutc, because Time#utc converts the caller's own object in place and
+      # raises on a frozen one.
+      value.getutc.iso8601(3)
     end
 
     private

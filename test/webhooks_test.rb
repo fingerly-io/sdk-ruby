@@ -31,6 +31,16 @@ class WebhooksTest < Minitest::Test
     refute verify(signature: (([bogus] * 32) + [sign(SECRET)]).join(","))
   end
 
+  # The headers are the sender's to write. The README promises false, never an
+  # exception, however the framework tags the strings.
+  def test_a_header_invalid_in_its_encoding_is_false_rather_than_an_exception
+    refute verify(timestamp: "\xFF\xFE", signature: sign(SECRET))
+    refute verify(signature: "sha256=\xFF")
+    refute verify(signature: "\xFF,\xFE ,")
+    refute verify(signature: "abc".encode("UTF-16"))
+    refute verify(timestamp: "123".encode("UTF-16"), signature: sign(SECRET))
+  end
+
   def test_refuses_a_tampered_payload
     refute verify(payload: "#{PAYLOAD} ", signature: sign(SECRET))
   end

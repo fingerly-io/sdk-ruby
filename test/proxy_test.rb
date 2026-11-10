@@ -75,6 +75,52 @@ class ProxyTest < Minitest::Test
     assert_equal PATH, proxy.path
   end
 
+  # The rescue for a visitor hanging up mid-body must never swallow what the
+  # host application raises: that turned its 500s into a proxy's "Bad request".
+  def test_leaves_an_error_from_the_application_alone
+    [Errno::ENOENT.new("config.yml"), IOError.new("closed stream")].each do |raised|
+      app = ->(_env) { raise raised }
+      proxy = Fingerly::Proxy.new(
+        app, proxy_key: PROXY_KEY, path: PATH, client_ip: ->(_r) { "203.0.113.7" }
+      )
+
+      assert_raises(raised.class) do
+        proxy.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/elsewhere",
+                   "rack.input" => StringIO.new)
+      end
+    end
+  end
+
+  # Some servers and middleware tag header values UTF-8 whether they are or
+  # not, and a regular expression raises on a string invalid in its encoding.
+  def test_a_header_invalid_in_its_encoding_is_refused_not_raised
+    calls = 0
+    proxy = Fingerly::Proxy.new(
+      proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9", logger: QUIET,
+      client_ip: lambda { |_r|
+        calls += 1
+        "203.0.113.7\xFF"
+      }
+    )
+
+    status, = proxy.call(
+      Rack::MockRequest.env_for(PATH, method: "POST", input: "{}",
+                                      "HTTP_X_API_KEY" => "fly_pk_production_\xFF")
+    )
+
+    assert_equal 401, status
+    assert_equal 0, calls
+
+    status, = proxy.call(
+      Rack::MockRequest.env_for(PATH, method: "POST", input: "{}",
+                                      "HTTP_X_API_KEY" => PUBLIC_KEY,
+                                      "HTTP_USER_AGENT" => "caf\xC3\xA9\xFF")
+    )
+
+    assert_equal 500, status, "the callback returned bytes that are no address"
+    assert_equal 1, calls
+  end
+
   # Middleware sees every request in the stack, so without a path it would
   # take the application's own routes from it.
   def test_refuses_to_be_middleware_without_a_path

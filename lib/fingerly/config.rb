@@ -52,7 +52,10 @@ module Fingerly
     #
     # @return [Scope, nil] nil when the key is not of the expected kind
     def scope_for(key, expected)
-      match = key.is_a?(String) ? KEY.match(key) : nil
+      # As bytes, because the proxy passes the browser's own header here and a
+      # string that is not valid in its encoding raises from a regular
+      # expression instead of failing to match.
+      match = key.is_a?(String) ? KEY.match(key.b) : nil
       return nil unless match && match[1] == expected
 
       Scope.new(match[2])
@@ -125,8 +128,8 @@ module Fingerly
     # Whether a value is exactly one IPv4 or IPv6 address and nothing else: no
     # list, port, prefix length, zone, padding or whitespace.
     def ip_literal?(value)
-      return false unless value.is_a?(String) && value.length <= 45
-      return false unless value.match?(/\A[0-9A-Fa-f:.]+\z/)
+      return false unless value.is_a?(String) && value.bytesize <= 45
+      return false unless value.b.match?(/\A[0-9A-Fa-f:.]+\z/)
 
       IPAddr.new(value)
       true
@@ -137,7 +140,7 @@ module Fingerly
     # Whether a value is printable ASCII, so it cannot inject a header of its
     # own.
     def header_safe?(value)
-      value.is_a?(String) && value.match?(/\A[\x20-\x7e]*\z/)
+      value.is_a?(String) && value.b.match?(/\A[\x20-\x7e]*\z/)
     end
   end
 end

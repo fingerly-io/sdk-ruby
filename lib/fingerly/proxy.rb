@@ -219,7 +219,17 @@ module Fingerly
       path = env["PATH_INFO"].to_s
       return pass(env) unless @path ? handles?(path) : mounted_exactly?(env)
 
-      request = ProxyRequest.new(env, path)
+      serve(env, ProxyRequest.new(env, path))
+    end
+
+    private
+
+    # Handles a request that is this proxy's own.
+    #
+    # Separate from {#call} so the rescue below can never reach the application
+    # behind the middleware: an +Errno::ENOENT+ or an +IOError+ raised by the
+    # host application is that application's error, not a visitor hanging up.
+    def serve(env, request)
       return refuse(405, "Method Not Allowed", "allow" => "POST") unless
         request.request_method.casecmp("POST").zero?
 
@@ -239,8 +249,6 @@ module Fingerly
       # read an answer, and there is nothing worth logging.
       refuse(400, "Bad request")
     end
-
-    private
 
     def redacted_fields
       [["path", @path.inspect], ["api_version", @api_version],

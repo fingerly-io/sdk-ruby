@@ -110,7 +110,7 @@ module Fingerly
 
     # Closes the idle connections kept for this destination.
     def close
-      Transport.drain(@pool_key).each { |entry| discard(entry.first) }
+      Transport.drain(@pool_key).each { |entry| discard(entry.http) }
     end
 
     # One entry per idle connection: the Net::HTTP, when it was opened, and
@@ -120,6 +120,7 @@ module Fingerly
     @idle = {}
     @lock = Mutex.new
     @pid = Process.pid
+    @swept_at = nil
 
     class << self
       # @api private
@@ -140,10 +141,10 @@ module Fingerly
         @lock.synchronize do
           list = idle_for(key)
           stale = prune(list, now)
-          next [false, stale] if list.size >= MAX_IDLE
-
-          list.push(entry)
-          [true, stale]
+          kept = list.size < MAX_IDLE
+          list.push(entry) if kept
+          # After the push, so a sweep cannot drop the list just appended to.
+          [kept, stale + sweep(now)]
         end
       end
 
@@ -168,6 +169,23 @@ module Fingerly
           @pid = Process.pid
         end
         @idle[key] ||= []
+      end
+
+      # A destination nobody asks for again would otherwise keep its sockets
+      # for ever: each +configure_http+ proc is its own key, so a client built
+      # per request with an inline proc strands one socket per request.
+      #
+      # @return [Array<Idle>] the stale connections the caller must close
+      def sweep(now)
+        return [] if @swept_at && now - @swept_at < IDLE_TIMEOUT
+
+        @swept_at = now
+        stale = []
+        @idle.delete_if do |_key, list|
+          stale.concat(prune(list, now))
+          list.empty?
+        end
+        stale
       end
 
       # The oldest entries sit at the front; take them while they are stale.
@@ -294,7 +312,9 @@ module Fingerly
     end
 
     def build
-      http = Net::HTTP.new(@uri.host, @uri.port)
+      # hostname, not host: host keeps an IPv6 literal's brackets, which
+      # Net::HTTP would then try to resolve as a name.
+      http = Net::HTTP.new(@uri.hostname, @uri.port)
       http.use_ssl = @uri.scheme == "https"
       http.max_retries = 0
       # Net::HTTP accepts a body shorter than its content-length by default,

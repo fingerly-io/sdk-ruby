@@ -28,6 +28,45 @@ class EventsTest < Minitest::Test
     end
   end
 
+  def test_escapes_every_byte_of_an_id_that_is_not_valid_utf8
+    assert_equal "a%FF%C3%A9", Fingerly::Events.escape("a\xFFé")
+  end
+
+  # Time#utc converts the caller's object in place and raises on a frozen one.
+  def test_leaves_the_callers_time_alone
+    from = Time.new(2026, 1, 1, 12, 0, 0, "+03:00")
+
+    assert_equal "2026-01-01T09:00:00.000Z", Fingerly::Events.instant(from)
+    assert_equal 10_800, from.utc_offset
+    assert_equal "2026-01-01T09:00:00.000Z", Fingerly::Events.instant(from.dup.freeze)
+  end
+
+  # An IPv6 literal keeps its brackets in URI#host, and the resolver cannot
+  # find a host called "[::1]".
+  def test_reaches_an_ipv6_literal_endpoint
+    server = begin
+      TCPServer.new("::1", 0)
+    rescue SystemCallError
+      skip "no IPv6 loopback here"
+    end
+    worker = Thread.new do
+      socket = server.accept
+      socket.readpartial(4096)
+      socket.write("HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-type: application/json\r\n" \
+                   "content-length: #{EVENT_JSON.bytesize}\r\n\r\n#{EVENT_JSON}")
+      socket.close
+    end
+
+    event = Fingerly::Client.new(
+      secret_key: SECRET_KEY, endpoint: "http://[::1]:#{server.addr[1]}"
+    ).events.get("r1")
+
+    assert_equal "r1", event.request_id
+  ensure
+    worker&.kill
+    server&.close
+  end
+
   def test_refuses_an_empty_request_id
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
       assert_raises(Fingerly::ConfigurationError) { client(api).events.get("") }
