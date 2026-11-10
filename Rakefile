@@ -18,7 +18,7 @@ task :signatures do
   sh "bundle exec rbs --log-level=error -I sig validate"
 end
 
-# rubygems/release-gem runs this. Bundler's stock task tags before it uploads,
+# release.yml runs this. Bundler's stock task tags before it uploads,
 # so a rejected upload would leave a tag that stops every retry. release.yml
 # tags after the upload instead.
 desc "Build the gem into pkg/ and push it to RubyGems"

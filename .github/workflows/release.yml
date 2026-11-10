@@ -109,8 +109,31 @@ jobs:
         with:
           ruby-version: "3.4"
           bundler-cache: true
-      # Runs `rake release`, which the Rakefile defines as build and push only.
-      - uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b # v1.4.1
+      # Trusted publishing, done by hand: rubygems/release-gem v1.4.1 cannot pass
+      # the `owner` RubyGems needs before a pending publisher may create the gem.
+      # RUBYGEMS_OWNER is the owning account's numeric ID from its Pending
+      # Trusted Publishers page; an ID, unlike a handle, cannot be re-registered.
+      - name: exchange the OIDC token for a RubyGems key
+        env:
+          OWNER: ${{ vars.RUBYGEMS_OWNER }}
+        run: |
+          if [ -z "$OWNER" ]; then
+            echo "::error::set the RUBYGEMS_OWNER repository variable"; exit 1
+          fi
+          jwt=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=rubygems.org" | jq -r .value)
+          body=$(jq -n --arg jwt "$jwt" --arg owner "$OWNER" '{jwt: $jwt, owner: $owner}' \
+            | curl -sS -X POST -H "Content-Type: application/json" --data @- \
+              https://rubygems.org/api/v1/oidc/trusted_publisher/exchange_token)
+          key=$(printf '%s' "$body" | jq -r '.rubygems_api_key // empty' 2>/dev/null || true)
+          if [ -z "$key" ]; then
+            # A failed exchange carries no key, so its body is safe to print.
+            echo "::error::RubyGems did not return a key: $body"; exit 1
+          fi
+          echo "::add-mask::$key"
+          echo "GEM_HOST_API_KEY=$key" >> "$GITHUB_ENV"
+      # `rake release` is build and push only, see the Rakefile.
+      - run: bundle exec rake release
       - name: tag and release
         run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
         env:
