@@ -34,6 +34,7 @@ class ContractTest < Minitest::Test
 
         assert_equal want["request_id"], event.request_id, fixture["name"]
         assert_equal want["visitor_id"], event.visitor_id, fixture["name"]
+        assert_equal want["project_id"], event.project_id, fixture["name"]
         assert_kind_of Time, event.occurred_at
 
         # A fixture without a score must not decode as zero.
@@ -61,6 +62,7 @@ class ContractTest < Minitest::Test
         assert_equal want["page"], page.page, fixture["name"]
         assert_equal want["page_size"], page.page_size, fixture["name"]
         assert_equal want.fetch("rows").map { |row| row["request_id"] }, page.map(&:request_id)
+        assert_equal want.fetch("rows").map { |row| row["project_id"] }, page.map(&:project_id)
       end
     end
   end

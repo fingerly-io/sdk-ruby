@@ -147,6 +147,10 @@ end
 `event.raw` keeps the response body exactly as it arrived, so a field the API
 adds later is reachable without a gem upgrade.
 
+`event.project_id` is the UUID string of the Fingerly project the event
+belongs to, on both `events.get` and `events.list` rows; it is `nil` when an
+older server does not send it.
+
 ## Read an event you just identified
 
 An event is usually readable as soon as identification answers. If it is
@@ -181,7 +185,9 @@ Apply your own policy to the server's verdict. A pending event (`pending?`)
 is not a verdict: retry after `retry_after` seconds or verify asynchronously,
 rather than refusing the action. Do not authorize an action using scores or
 visitor identifiers supplied by the browser. Tags correlate events; they do
-not replace your application's authentication or replay protection.
+not replace your application's authentication or replay protection. A tag must
+never hold a personal identifier, such as a user ID, email, install ID or
+advertising ID, because the server keeps tags in long-lived rollups.
 
 ## Webhooks
 
@@ -221,7 +227,9 @@ Malformed or missing input is a false result, never an exception, and a body
 that is not valid UTF-8 verifies rather than raising on concatenation.
 
 `WebhookEvent#data` stays a plain `Hash`, so a new event type needs no gem
-upgrade.
+upgrade. `identification.completed` and `visitor.suspect` deliveries carry the
+event's project as `data["project_id"]`; `identification.refused` carries it
+only when the refused request named a known key.
 
 ## Same-origin proxy
 

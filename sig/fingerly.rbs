@@ -50,6 +50,7 @@ module Fingerly
     STRING_FIELDS: Array[String]
 
     attr_reader request_id: String?
+    attr_reader project_id: String?
     attr_reader visitor_id: String?
     attr_reader state: String?
     attr_reader environment: String?
