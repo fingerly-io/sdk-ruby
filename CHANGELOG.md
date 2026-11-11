@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `Fingerly::Event#ip_address` is removed; `#ip_network` (an IPv4 /24 or an
+  IPv6 /40, such as `203.0.113.0/24`, or nil when absent) replaces it. The
+  API no longer returns the address.
+- `Fingerly::Event#deferred_signals` is removed; the API no longer returns
+  the deferred report.
+- `Fingerly::Event#document` is now an allow-listed view of the archived
+  request, with no raw signals, user agent or address.
+
 ## 0.1.1
 
 - Security: `Fingerly::Client#events.get` now refuses the request ids `.`

@@ -36,7 +36,7 @@ module Fingerly
     # them. Anything not listed stays reachable through {#raw}.
     STRING_FIELDS = %w[
       request_id visitor_id state environment platform sdk_platform sdk_version
-      origin url_host url_path tag ip_address country_code country_name asn
+      origin url_host url_path tag ip_network country_code country_name asn
       asn_name anonymity_network agent agent_version os device_kind visitor_kind
       suspect_level
     ].freeze
@@ -50,12 +50,12 @@ module Fingerly
     # @return [Array<EventTrigger>] the signal groups behind the score; never
     #   nil, and empty when nothing fired
     attr_reader :triggers
-    # @return [Hash, nil] the archived submission, when one was kept. Its
-    #   contents are deliberately opaque, not a public contract.
+    # @return [Hash, nil] an allow-listed view of the archived request, when
+    #   one was kept: schema, request id, time, SDK, network, IP
+    #   classification and city-level location, risk, attestation and
+    #   velocity. It holds no raw signals, user agent or address, and its
+    #   contents are not a public contract.
     attr_reader :document
-    # @return [Hash, nil] the deferred report attached to this request, when
-    #   one arrived. Also opaque.
-    attr_reader :deferred_signals
     # @return [Hash] the response body exactly as it arrived, so a field the
     #   API adds after this SDK was released needs no upgrade
     attr_reader :raw
@@ -68,7 +68,6 @@ module Fingerly
       @has_document = payload["has_document"] ? true : false
       @triggers = Array(payload["triggers"]).map { |item| EventTrigger.new(item) }.freeze
       @document = payload["document"]
-      @deferred_signals = payload["deferred_signals"]
       @raw = payload
       freeze
     end
