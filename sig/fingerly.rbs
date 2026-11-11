@@ -61,7 +61,7 @@ module Fingerly
     attr_reader url_host: String?
     attr_reader url_path: String?
     attr_reader tag: String?
-    attr_reader ip_address: String?
+    attr_reader ip_network: String?
     attr_reader country_code: String?
     attr_reader country_name: String?
     attr_reader asn: String?
@@ -78,7 +78,6 @@ module Fingerly
     attr_reader suspect_score: Integer?
     attr_reader triggers: Array[EventTrigger]
     attr_reader document: Hash[String, untyped]?
-    attr_reader deferred_signals: Hash[String, untyped]?
     attr_reader raw: Hash[String, untyped]
 
     def initialize: (Hash[String, untyped]) -> void

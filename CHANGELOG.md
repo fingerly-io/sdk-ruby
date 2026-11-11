@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- `Fingerly::Event#project_id` is the Fingerly project an event belongs to,
+  on single reads and list rows; nil when the server does not send it.
+  Webhook `data` for `identification.completed` and `visitor.suspect` (and
+  `identification.refused` when the key was known) carries `project_id`.
+- `Fingerly::Event#ip_address` is removed; `#ip_network` (an IPv4 /24 or an
+  IPv6 /40, such as `203.0.113.0/24`, or nil when absent) replaces it. The
+  API no longer returns the address.
+- `Fingerly::Event#deferred_signals` is removed; the API no longer returns
+  the deferred report.
+- `Fingerly::Event#document` is now an allow-listed view of the archived
+  request, with no raw signals, user agent or address.
+- The vendored contract snapshot is refreshed.
+
 ## 0.1.1
 
 - Security: `Fingerly::Client#events.get` now refuses the request ids `.`
