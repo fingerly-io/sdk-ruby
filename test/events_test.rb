@@ -20,6 +20,30 @@ class EventsTest < Minitest::Test
     end
   end
 
+  def test_exposes_the_project_the_event_belongs_to
+    project_id = "0199a963-e400-7000-8000-0000000000a1"
+    event = JSON.generate("request_id" => "r1", "project_id" => project_id,
+                          "visitor_id" => "v1", "occurred_at" => "2026-01-02T03:04:05Z")
+    page = "{\"rows\":[#{event}],\"page\":1,\"page_size\":1}"
+
+    FakeAPI.run(FakeAPI.json(200, event)) do |api|
+      assert_equal project_id, client(api).events.get("r1").project_id
+    end
+    FakeAPI.run(FakeAPI.json(200, page)) do |api|
+      assert_equal [project_id], client(api).events.list.map(&:project_id)
+    end
+  end
+
+  # Older servers do not send project_id.
+  def test_reads_an_event_without_a_project_id
+    FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
+      event = client(api).events.get("r1")
+
+      assert_nil event.project_id
+      assert_equal "r1", event.request_id
+    end
+  end
+
   def test_escapes_a_request_id_into_one_path_segment
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
       client(api).events.get("a b/../admin")

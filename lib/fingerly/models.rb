@@ -33,12 +33,14 @@ module Fingerly
   # the distinction at the call site.
   class Event
     # Fields copied straight from the response, in the order the API documents
-    # them. Anything not listed stays reachable through {#raw}.
+    # them. Anything not listed stays reachable through {#raw}. +project_id+
+    # is the UUID string of the Fingerly project the event belongs to, and nil
+    # when an older server does not send it.
     STRING_FIELDS = %w[
-      request_id visitor_id state environment platform sdk_platform sdk_version
-      origin url_host url_path tag ip_address country_code country_name asn
-      asn_name anonymity_network agent agent_version os device_kind visitor_kind
-      suspect_level
+      request_id project_id visitor_id state environment platform sdk_platform
+      sdk_version origin url_host url_path tag ip_address country_code
+      country_name asn asn_name anonymity_network agent agent_version os
+      device_kind visitor_kind suspect_level
     ].freeze
 
     STRING_FIELDS.each { |name| attr_reader name.to_sym }
