@@ -325,7 +325,7 @@ the server's or the load balancer's own limit as well. Falcon streams the body,
 so there the proxy stops reading at the limit. Only the content type, the
 visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
 customer cookies and authorization headers never are. The proxy reports itself
-upstream as `ruby/0.1.1` in `x-fingerly-proxy-version`, which the dashboard
+upstream as `ruby/0.2.0` in `x-fingerly-proxy-version`, which the dashboard
 shows per proxy.
 
 When Fingerly cannot be reached, the visitor gets a gateway error rather than
