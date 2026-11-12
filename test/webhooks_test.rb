@@ -118,6 +118,19 @@ class WebhooksTest < Minitest::Test
     assert_equal({}, delivery.data)
   end
 
+  # data stays a plain Hash, so project_id is read from it, present or not.
+  def test_keeps_the_project_id_in_data
+    project_id = "0199a963-e400-7000-8000-0000000000a1"
+    with_project = Fingerly::Webhooks.parse(
+      JSON.generate("id" => "evt_2", "type" => "visitor.suspect",
+                    "data" => { "project_id" => project_id })
+    )
+    refused = Fingerly::Webhooks.parse('{"id":"evt_3","type":"identification.refused","data":{}}')
+
+    assert_equal project_id, with_project.data["project_id"]
+    assert_nil refused.data["project_id"]
+  end
+
   def test_refuses_to_parse_something_that_is_not_an_envelope
     assert_raises(Fingerly::Error) { Fingerly::Webhooks.parse("<html>") }
     assert_raises(Fingerly::Error) { Fingerly::Webhooks.parse("[1,2]") }
