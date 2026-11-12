@@ -1,22 +1,98 @@
-# fingerly-ruby
+<p align="center">
+  <a href="https://fingerly.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fingerly-io/.github/main/assets/logo-dark.svg">
+      <img src="https://raw.githubusercontent.com/fingerly-io/.github/main/assets/logo-light.svg" alt="Fingerly" height="44">
+    </picture>
+  </a>
+</p>
 
-Server-side event reads, webhook verification and a same-origin proxy for
-Ruby.
+<p align="center"><b>Fingerly for Ruby</b><br>Read device intelligence events, verify webhooks and serve the browser SDK from your own domain.</p>
 
-```ruby
-gem "fingerly", "~> 0.1"
-```
+<p align="center">
+  <a href="https://rubygems.org/gems/fingerly"><img src="https://img.shields.io/gem/v/fingerly?style=flat-square" alt="Gem version"></a>
+  <a href="https://github.com/fingerly-io/sdk-ruby/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/fingerly-io/sdk-ruby/ci.yml?style=flat-square&label=ci" alt="CI status"></a>
+  <a href="https://github.com/fingerly-io/sdk-ruby/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/ruby-%E2%89%A5%203.2-CC342D?style=flat-square" alt="Ruby 3.2 or newer">
+  <a href="https://docs.fingerly.io/docs/sdks/ruby"><img src="https://img.shields.io/badge/docs-docs.fingerly.io-111827?style=flat-square" alt="Documentation"></a>
+</p>
 
-```ruby
-require "fingerly"
+<p align="center"><img src="https://raw.githubusercontent.com/fingerly-io/.github/main/assets/banner.webp" alt="Fingerly" width="100%"></p>
 
-fingerly = Fingerly::Client.new(secret_key: ENV.fetch("FINGERLY_SECRET_KEY"))
+## What is this
 
-request_id = ARGV.fetch(0) # the requestId the browser SDK's identify() returned
-event = fingerly.events.get(request_id)
-page = fingerly.events.list(level: "high", limit: 50)
-page.each { |row| puts "#{row.request_id} #{row.suspect_level}" }
-```
+The `fingerly` gem is the server-side SDK for Ruby. It reads Fingerly events
+with a secret key, verifies webhook signatures and relays the browser SDK's
+traffic through your own domain with a same-origin Rack proxy. It has no
+runtime dependencies and is for backends that protect signups, logins and
+payments from fraud and abuse. [Fingerly](https://fingerly.io) identifies the
+device behind each session and scores how suspicious it is.
+
+## Getting started
+
+1. **Prerequisites.** A Fingerly account and a secret key (`fly_sk_...`). See
+   [API keys and environments](https://docs.fingerly.io/docs/api-keys). Ruby
+   3.2+.
+2. **Install.** Add it to your `Gemfile`:
+
+   ```ruby
+   gem "fingerly", "~> 0.2"
+   ```
+
+3. **Read an event.**
+
+   ```ruby
+   require "fingerly"
+
+   fingerly = Fingerly::Client.new(secret_key: ENV.fetch("FINGERLY_SECRET_KEY"))
+
+   request_id = ARGV.fetch(0) # the requestId the browser SDK's identify() returned
+   event = fingerly.events.get(request_id)
+   page = fingerly.events.list(level: "high", limit: 50)
+   page.each { |row| puts "#{row.request_id} #{row.suspect_level}" }
+   ```
+
+4. **Verify a webhook.**
+
+   ```ruby
+   class FingerlyWebhooksController < ActionController::API
+     def create
+       payload = request.raw_post
+
+       valid = Fingerly::Webhooks.verify(
+         secret: ENV.fetch("FINGERLY_WEBHOOK_SECRET"),
+         payload: payload,
+         timestamp: request.headers["x-fingerly-timestamp"],
+         signature: request.headers["x-fingerly-signature"]
+       )
+       return head :bad_request unless valid
+
+       event = Fingerly::Webhooks.parse(payload)
+       # Hand the work to your own job queue here, deduplicating on event.id.
+       Rails.logger.info("Fingerly webhook #{event.id} (#{event.type})")
+       head :no_content
+     end
+   end
+   ```
+
+   ```ruby
+   # config/routes.rb
+   post "/webhooks/fingerly", to: "fingerly_webhooks#create"
+   ```
+
+Full guide: [docs.fingerly.io/docs/sdks/ruby](https://docs.fingerly.io/docs/sdks/ruby).
+
+## Choose what you need
+
+| I want to | Use | Read |
+| --- | --- | --- |
+| Read an event after the browser identified a visitor | `Fingerly::Client` and `events.get` / `events.list` | [Read events](#read-events) |
+| Check a webhook delivery is genuine | `Fingerly::Webhooks.verify` and `.parse` | [Verify webhooks](#verify-webhooks) |
+| Keep the browser SDK first-party, away from content blockers | `Fingerly::Proxy`, a Rack middleware | [First-party proxy](#first-party-proxy-same-origin) |
+
+On this page: [Read events](#read-events) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
+
+## Read events
 
 Event reads require `fly_sk_{production|staging|development}_` keys. Requests
 go to `https://api.fingerly.io`; `endpoint:` overrides that for a local
@@ -25,113 +101,7 @@ before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
 and never retry.
 
-Requires Ruby 3.2+, which is what the gemspec declares, and fiber-scheduler
-support below needs nothing newer. No runtime dependencies: everything it
-needs is in the standard library. Rack is a contract rather than a
-dependency, so the proxy speaks it without loading it and cannot pin a version
-against your own.
-
-## There is no asynchronous client, and none is needed
-
-The Python SDK ships two clients because ASGI and WSGI are two live server
-standards, and a blocking call inside FastAPI stalls its event loop. Ruby has
-one server interface, Rack, and every framework on it calls your application
-synchronously.
-
-The stack that is not thread-per-request is covered anyway. On Ruby 3.2+,
-the floor this gem requires, `Net::HTTP` yields to a fiber scheduler, so under
-Falcon or the `async` gem the blocking reads in this SDK hand the thread back
-to the scheduler rather than holding it. Concurrent calls overlap without a
-second API to choose between, and there are tests asserting exactly that under
-both a fiber scheduler and plain threads.
-
-Where there is no fiber scheduler, a call holds its thread until it answers,
-for at most `timeout:`. That is what Puma and Unicorn expect. Do not call the
-client from an event loop that is not a fiber scheduler, such as an
-EventMachine reactor: there it would stall every connection the loop serves.
-
-Size the thread pool for the slow case, not the average one: while Fingerly is
-slow, every proxied request holds its thread for the whole `timeout:`. At 100
-proxied requests a second with 1% of them running into a 5 second timeout, that
-is 5 threads busy on average, before any fast request is served. Run more
-threads than that across your Puma or Unicorn workers, lower `timeout:` for the
-proxy, or serve with Falcon, where a waiting call holds no thread.
-
-## Deadlines
-
-`timeout:` bounds the whole exchange: connecting, sending, the response
-headers and the body.
-
-That takes care on this platform. `Net::HTTP` has `open_timeout`,
-`read_timeout` and `write_timeout`, but each bounds a single operation: a
-server that answers and then sends one byte a second would satisfy all three
-forever, and so would one that sends a header line a second, because each
-header line gets the full read timeout. The client shrinks the socket's own
-timeouts to whatever is left of the deadline before each step, and one
-`Timeout` around the whole exchange covers the header lines, so the bound is
-tight rather than a multiple of the timeout. Under a fiber scheduler that
-`Timeout` is the scheduler's own.
-
-Idle connections are kept in one pool per process and destination, shared by
-every client and proxy in it. `Net::HTTP` cannot be used by two threads or
-fibers at once, so each exchange checks a connection out and hands it back
-when it is done: a burst of a few hundred concurrent requests reuses its
-sockets rather than opening one each, and a fiber that ends (Falcon runs one
-per client connection) returns its socket instead of stranding it. At most
-256 idle connections are kept per destination. A connection is reopened after
-60 seconds, so DNS is asked again, and dropped after 15 seconds idle. One the
-other end closed while it was idle is reopened and the request sent again,
-but only for `GET`, because a `POST` that may already have arrived must never
-be sent twice. A forked worker starts with an empty pool.
-
-## Errors
-
-Every runtime failure derives from `Fingerly::Error`. A bad option raises
-`Fingerly::ConfigurationError`, which is an `ArgumentError`: a key that was
-never valid is a programming mistake rather than something a rescue around the
-call site can help with.
-
-```ruby
-def decide(fingerly, request_id)
-  event = fingerly.events.get(request_id)
-  event.scored? && event.suspect_level == "low" ? "allow" : "review"
-rescue Fingerly::APIError => e
-  return "retry later" if e.pending? # not decided yet: read again after e.retry_after
-  return "refuse" if e.event_not_found?
-  return "retry later" if e.status == 429
-
-  raise
-end
-```
-
-Every response outside 2xx, a redirect included, raises `Fingerly::APIError`.
-It carries `status`, and optional `code`, `details`, `request_id` and
-`retry_after`. The secret key is stripped from the first three, and the
-response body is never echoed. `request_id` falls back to the `x-request-id`
-header when the body is not an error envelope. `retry_after` is the
-`Retry-After` header in whole seconds, from either of its forms, or `nil`
-when there was none: on a `429` or a pending event, wait that long before
-reading again.
-
-A read answers `404` with one of two codes, each with its own predicate:
-
-- `pending?`: `event_pending`, the request id was accepted and the event is
-  still being recorded. Nothing is decided yet: read again after
-  `retry_after` seconds (the API sends `Retry-After: 2`), or verify
-  asynchronously. Do not treat it as fraud.
-- `event_not_found?`: `event_not_found`, the request id was never issued, or
-  the event is past retention.
-
-The client never retries by itself. A deadline raises
-`Fingerly::TimeoutError`; an unreachable API raises
-`Fingerly::ConnectionError`.
-
-No object in the SDK shows a credential. A client or proxy printed with
-`inspect`, `to_s`, `pp`, `to_json` or YAML shows `[redacted]` in place of its
-key, and `Marshal.dump` refuses it. The request handed to `client_ip` hides the
-visitor's cookies and authorization header the same way.
-
-## Unscored events
+### Unscored events
 
 `event.suspect_score` is `nil` when the request was not scored. Never read nil
 as zero: a visitor about whom nothing fired scores 0, while a submission that
@@ -151,7 +121,7 @@ adds later is reachable without a gem upgrade.
 belongs to, on both `events.get` and `events.list` rows; it is `nil` when an
 older server does not send it.
 
-## Read an event you just identified
+### Read an event you just identified
 
 An event is usually readable as soon as identification answers. If it is
 still being recorded, the read raises a `Fingerly::APIError` whose `pending?`
@@ -177,7 +147,7 @@ retention, and is never pending.
 The archived document arrives moments after the event itself, so check
 `has_document?` rather than assuming it is there.
 
-## Verify a backend action
+### Verify a backend action
 
 Read the event with a server-only key. Check that its tag matches your action,
 that it is recent, that its environment is correct, and that it was scored.
@@ -189,49 +159,74 @@ not replace your application's authentication or replay protection. A tag must
 never hold a personal identifier, such as a user ID, email, install ID or
 advertising ID, because the server keeps tags in long-lived rollups.
 
-## Webhooks
+### Errors
+
+Every runtime failure derives from `Fingerly::Error`. A bad option raises
+`Fingerly::ConfigurationError`, which is an `ArgumentError`: a key that was
+never valid is a programming mistake rather than something a rescue around the
+call site can help with.
 
 ```ruby
-class FingerlyWebhooksController < ActionController::API
-  def create
-    payload = request.raw_post
+def decide(fingerly, request_id)
+  event = fingerly.events.get(request_id)
+  event.scored? && event.suspect_level == "low" ? "allow" : "review"
+rescue Fingerly::APIError => e
+  return "retry later" if e.pending? # not decided yet: read again after e.retry_after
+  return "refuse" if e.event_not_found?
+  return "retry later" if e.status == 429
 
-    valid = Fingerly::Webhooks.verify(
-      secret: ENV.fetch("FINGERLY_WEBHOOK_SECRET"),
-      payload: payload,
-      timestamp: request.headers["x-fingerly-timestamp"],
-      signature: request.headers["x-fingerly-signature"]
-    )
-    return head :bad_request unless valid
-
-    event = Fingerly::Webhooks.parse(payload)
-    # Hand the work to your own job queue here, deduplicating on event.id.
-    Rails.logger.info("Fingerly webhook #{event.id} (#{event.type})")
-    head :no_content
-  end
+  raise
 end
 ```
 
-```ruby
-# config/routes.rb
-post "/webhooks/fingerly", to: "fingerly_webhooks#create"
-```
+| Error | Raised when |
+| --- | --- |
+| `Fingerly::ConfigurationError` (an `ArgumentError`) | A bad option, such as a key that was never valid. |
+| `Fingerly::APIError` | Every response outside 2xx, a redirect included. Carries `status`, and optional `code`, `details`, `request_id` and `retry_after`. |
+| `Fingerly::TimeoutError` | The deadline (`timeout:`) passed. |
+| `Fingerly::ConnectionError` | The API is unreachable. |
 
-Verify the exact raw bytes before parsing them. `request.raw_post` is those
-bytes; a body reconstructed from parsed parameters is not. Signatures cover
-the timestamp and body. The default replay tolerance is five minutes; persist
-processed `id` values to deduplicate deliveries. During signing-secret
-rotation, any matching signature in the comma-separated header is accepted;
-only the first 32 are read.
-Malformed or missing input is a false result, never an exception, and a body
-that is not valid UTF-8 verifies rather than raising on concatenation.
+On `APIError`, the secret key is stripped from the first three of those
+fields, and the response body is never echoed. `request_id` falls back to the
+`x-request-id` header when the body is not an error envelope. `retry_after` is
+the `Retry-After` header in whole seconds, from either of its forms, or `nil`
+when there was none: on a `429` or a pending event, wait that long before
+reading again.
+
+A read answers `404` with one of two codes, each with its own predicate:
+
+| Predicate | Code | Meaning |
+| --- | --- | --- |
+| `pending?` | `event_pending` | The request id was accepted and the event is still being recorded. Nothing is decided yet: read again after `retry_after` seconds (the API sends `Retry-After: 2`), or verify asynchronously. Do not treat it as fraud. |
+| `event_not_found?` | `event_not_found` | The request id was never issued, or the event is past retention. |
+
+The client never retries by itself.
+
+No object in the SDK shows a credential. A client or proxy printed with
+`inspect`, `to_s`, `pp`, `to_json` or YAML shows `[redacted]` in place of its
+key, and `Marshal.dump` refuses it. The request handed to `client_ip` hides the
+visitor's cookies and authorization header the same way.
+
+## Verify webhooks
+
+The controller and route are in [Getting started](#getting-started). Verify the
+exact raw bytes before parsing them. `request.raw_post` is those bytes; a body
+reconstructed from parsed parameters is not.
+
+| Behaviour | Detail |
+| --- | --- |
+| What a signature covers | the timestamp and the body |
+| Replay tolerance | five minutes by default |
+| Secret rotation | any matching signature in the comma-separated header is accepted; only the first 32 are read |
+| Malformed or missing input | a false result, never an exception; a body that is not valid UTF-8 verifies rather than raising on concatenation |
+| Deduplication | persist processed `id` values to deduplicate deliveries |
 
 `WebhookEvent#data` stays a plain `Hash`, so a new event type needs no gem
 upgrade. `identification.completed` and `visitor.suspect` deliveries carry the
 event's project as `data["project_id"]`; `identification.refused` carries it
 only when the refused request named a known key.
 
-## Same-origin proxy
+## First-party proxy (same-origin)
 
 Content blockers refuse browser requests to third-party APIs, and a refused
 identification is a visitor never identified. Mount the proxy on a path of
@@ -275,6 +270,19 @@ Put it first, ahead of authentication: the browser SDK sends no cookies and
 carries no user, and a filter that redirected it to a sign-in page would break
 identification for every signed-out visitor.
 
+> **`client_ip` is the one thing you must get right.** Resolve it from a
+> header your own infrastructure sets, such as your load balancer's or CDN's,
+> and fall back to `request.peer_host`, the TCP peer, when it is absent, as in
+> local development. Trust that header only when traffic can reach your
+> application through that CDN alone; otherwise a visitor can set it. Never read
+> the left-most `X-Forwarded-For` value: the visitor writes it.
+
+`client_ip` must return exactly one IPv4 or IPv6 address. Anything else, `nil`
+or an empty string, a list, a port, a prefix length, or an exception, is a
+configuration mistake: the proxy sends nothing upstream, answers `500` with
+"The client IP callback returned no valid address", and logs it once per
+process rather than once per visitor.
+
 Then point the browser SDK at the same path. Both of its calls go there, with
 nothing appended:
 
@@ -283,6 +291,8 @@ import { load } from '@fingerly/web-js'
 
 const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
+
+### Mounting without a path
 
 `path` is optional where the framework already routes the path to the proxy,
 as a Rails `mount` or a `Rack::URLMap` entry does. Omit it there: the mount has
@@ -305,44 +315,32 @@ and its absence is a `ConfigurationError` at start-up.
 
 ### What the proxy does
 
-It answers only the configured path, matched exactly and case-sensitively:
-`/k7x2qm4a/`, `//k7x2qm4a`, `/k7x2qm4a/.`, `/k7x2qm4a%2F` and `/k7x2qm4a/admin`
-are not its own. Anything else is passed along to
-your application, or answered `404` when the proxy has no application behind
-it. On its own path, anything but `POST` gets `405`. Every request it accepts
-goes to one URL, `https://api.fingerly.io/api/v1/ingest`, which tells the
-identification from the report that follows it by the body. Nothing else is
-reachable through it, event reads included: they need a secret key and stay
-unreachable from a browser by construction. `api_version:` changes only the
-version in that URL.
+| Rule | Behaviour |
+| --- | --- |
+| Path match | Only the configured path, matched exactly and case-sensitively: `/k7x2qm4a/`, `//k7x2qm4a`, `/k7x2qm4a/.`, `/k7x2qm4a%2F` and `/k7x2qm4a/admin` are not its own. Anything else is passed along to your application, or answered `404` when the proxy has no application behind it. |
+| Other methods | On its own path, anything but `POST` gets `405`. |
+| Upstream | Every request it accepts goes to one URL, `https://api.fingerly.io/api/v1/ingest`, which tells the identification from the report that follows it by the body. `api_version:` changes only the version in that URL. |
+| Event reads | Nothing else is reachable through it, event reads included: they need a secret key and stay unreachable from a browser by construction. |
+| Public key | The browser must present a public key from the same environment as the proxy key, or the request gets `401`. |
+| Body size | Bodies over 1 MiB get `413`, enforced while reading rather than after buffering. |
+| Forwarded upstream | Only the content type, the visitor metadata Fingerly needs, and an `Idempotency-Key`. Customer cookies and authorization headers never are. |
+| Proxy identity | The proxy reports itself upstream as `ruby/0.2.0` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
+| Fingerly unreachable | The visitor gets a gateway error rather than your application's `500`. |
+| Deadline passes | `504 Gateway timeout` when `timeout:` (5 seconds by default) passes. |
+| Any other upstream failure | `502 Bad gateway`, whether the connection was refused or reset, the name did not resolve, or the answer was malformed, cut short or over 4 MiB. |
+| Truncated answers | The whole answer is read before anything is written back, so a truncated response is never relayed as a success. |
+| Failure logging | Each failure logs one line, without a stack trace, to `logger:` when you pass one, to `rack.logger` when your server provides it, and to standard error otherwise. |
+| Relayed back | Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining` and `retry-after`, plus `cache-control: no-store` set by the proxy. A content blocker can match a response header by name, and an allowlist keeps anything that names Fingerly off the response, whatever the API adds later. |
+| Header shape | Relayed headers are lowercase and repeats joined with `", "`, which is the one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name outright, and Rack 2 refuses the array Rack 3 would rather have. |
 
-The browser must present a public key from the same environment as the proxy
-key, or the request gets `401`. Bodies over 1 MiB get `413`,
-enforced while reading rather than after buffering. That bounds what the proxy
-holds. A server that buffers the whole request before calling the application,
-as Puma does, has already read it by then, so bound request bodies there with
-the server's or the load balancer's own limit as well. Falcon streams the body,
-so there the proxy stops reading at the limit. Only the content type, the
-visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
-customer cookies and authorization headers never are. The proxy reports itself
-upstream as `ruby/0.2.0` in `x-fingerly-proxy-version`, which the dashboard
-shows per proxy.
+The 1 MiB limit bounds what the proxy holds. A server that buffers the whole
+request before calling the application, as Puma does, has already read it by
+then, so bound request bodies there with the server's or the load balancer's own
+limit as well. Falcon streams the body, so there the proxy stops reading at the
+limit.
 
-When Fingerly cannot be reached, the visitor gets a gateway error rather than
-your application's `500`: `504 Gateway timeout` when `timeout:` (5 seconds by
-default) passes, and `502 Bad gateway` for anything else, whether the
-connection was refused or reset, the name did not resolve, or the answer was
-malformed, cut short or over 4 MiB. The whole answer is read before anything
-is written back, so a truncated response is never relayed as a success. Each
-failure logs one line, without a stack trace, to `logger:` when you pass one,
-to `rack.logger` when your server provides it, and to standard error
-otherwise.
-
-Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining`
-and `retry-after` are relayed back, plus `cache-control: no-store` set by the
-proxy. A content blocker can match a response header by name, and an
-allowlist keeps anything that names Fingerly off the response, whatever the
-API adds later.
+<details>
+<summary>Why the middleware decides from the path alone, and what <code>path</code> means</summary>
 
 The middleware decides from the path alone before it reads anything. It sees
 every request in the stack, and reading the body to find out whether one
@@ -356,24 +354,80 @@ means the same thing wherever the application is deployed. Use the one the
 dashboard issued rather than inventing one: blockers look for words such as
 `fingerprint`, `tracking` and `analytics` in a path.
 
-Relayed headers are lowercase and repeats joined with `", "`, which is the
-one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name
-outright, and Rack 2 refuses the array Rack 3 would rather have.
+</details>
 
-> **`client_ip` is the one thing you must get right.** Resolve it from a
-> header your own infrastructure sets, such as your load balancer's or CDN's,
-> and fall back to `request.peer_host`, the TCP peer, when it is absent, as in
-> local development. Trust that header only when traffic can reach your
-> application through that CDN alone; otherwise a visitor can set it. Never read
-> the left-most `X-Forwarded-For` value: the visitor writes it.
+## Threads, fibers and deadlines
 
-`client_ip` must return exactly one IPv4 or IPv6 address. Anything else, `nil`
-or an empty string, a list, a port, a prefix length, or an exception, is a
-configuration mistake: the proxy sends nothing upstream, answers `500` with
-"The client IP callback returned no valid address", and logs it once per
-process rather than once per visitor.
+There is no asynchronous client, and none is needed.
+
+The Python SDK ships two clients because ASGI and WSGI are two live server
+standards, and a blocking call inside FastAPI stalls its event loop. Ruby has
+one server interface, Rack, and every framework on it calls your application
+synchronously.
+
+The stack that is not thread-per-request is covered anyway. On Ruby 3.2+,
+the floor this gem requires, `Net::HTTP` yields to a fiber scheduler, so under
+Falcon or the `async` gem the blocking reads in this SDK hand the thread back
+to the scheduler rather than holding it. Concurrent calls overlap without a
+second API to choose between, and there are tests asserting exactly that under
+both a fiber scheduler and plain threads.
+
+Where there is no fiber scheduler, a call holds its thread until it answers,
+for at most `timeout:`. That is what Puma and Unicorn expect. Do not call the
+client from an event loop that is not a fiber scheduler, such as an
+EventMachine reactor: there it would stall every connection the loop serves.
+
+Size the thread pool for the slow case, not the average one: while Fingerly is
+slow, every proxied request holds its thread for the whole `timeout:`. At 100
+proxied requests a second with 1% of them running into a 5 second timeout, that
+is 5 threads busy on average, before any fast request is served. Run more
+threads than that across your Puma or Unicorn workers, lower `timeout:` for the
+proxy, or serve with Falcon, where a waiting call holds no thread.
+
+### Deadlines
+
+`timeout:` bounds the whole exchange: connecting, sending, the response
+headers and the body.
+
+That takes care on this platform. `Net::HTTP` has `open_timeout`,
+`read_timeout` and `write_timeout`, but each bounds a single operation: a
+server that answers and then sends one byte a second would satisfy all three
+forever, and so would one that sends a header line a second, because each
+header line gets the full read timeout. The client shrinks the socket's own
+timeouts to whatever is left of the deadline before each step, and one
+`Timeout` around the whole exchange covers the header lines, so the bound is
+tight rather than a multiple of the timeout. Under a fiber scheduler that
+`Timeout` is the scheduler's own.
+
+### Connection pool
+
+Idle connections are kept in one pool per process and destination, shared by
+every client and proxy in it. `Net::HTTP` cannot be used by two threads or
+fibers at once, so each exchange checks a connection out and hands it back
+when it is done: a burst of a few hundred concurrent requests reuses its
+sockets rather than opening one each, and a fiber that ends (Falcon runs one
+per client connection) returns its socket instead of stranding it.
+
+| Pool rule | Value |
+| --- | --- |
+| Idle connections kept | at most 256 per destination |
+| Reopened after | 60 seconds, so DNS is asked again |
+| Dropped after | 15 seconds idle |
+| Closed while idle by the other end | reopened and the request sent again, but only for `GET`, because a `POST` that may already have arrived must never be sent twice |
+| Forked worker | starts with an empty pool |
+
+## Requirements
+
+Ruby 3.2+, which is what the gemspec declares (`required_ruby_version >= 3.2.0`),
+and fiber-scheduler support needs nothing newer. CI runs Ruby 3.2, 3.3 and 3.4.
+No runtime dependencies: everything it needs is in the standard library. Rack is
+a contract rather than a dependency, so the proxy speaks it without loading it
+and cannot pin a version against your own.
 
 ## Development and release preparation
+
+<details>
+<summary>Tests, signatures, contract snapshot, release, source structure</summary>
 
 ```sh
 bundle install
@@ -400,7 +454,7 @@ separate check step. Never put production secrets in fixtures.
 The gemspec sets `allowed_push_host` to RubyGems, so a push to any other host
 is refused.
 
-## Source structure
+### Source structure
 
 `Client` holds the connection and the options; `Events` owns the reads and the
 list filters, and `Event`, `EventPage` and `EventTrigger` are what they speak
@@ -408,3 +462,22 @@ in. `Webhooks` verifies signatures. `Proxy` holds every proxy decision, with
 `ProxyRequest` as the shape `client_ip` is given. `Config` validates every
 caller-supplied option before any network access, and `Transport` is the one
 place that knows how to bound an exchange and reuse a socket.
+
+</details>
+
+## Documentation
+
+- [Ruby SDK guide](https://docs.fingerly.io/docs/sdks/ruby)
+- [Webhooks](https://docs.fingerly.io/docs/webhooks)
+- [Proxy integrations](https://docs.fingerly.io/docs/proxy-integrations)
+- [API reference](https://docs.fingerly.io/reference/overview)
+
+## Help
+
+Open an issue on [this repository](https://github.com/fingerly-io/sdk-ruby/issues), or write to
+[support@fingerly.io](mailto:support@fingerly.io). Report security issues to
+[security@fingerly.io](mailto:security@fingerly.io).
+
+## Licence
+
+Apache-2.0. See [LICENSE](https://github.com/fingerly-io/sdk-ruby/blob/main/LICENSE).
