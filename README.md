@@ -310,7 +310,9 @@ import { load } from '@fingerly/web-js'
 const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
 
-`path` is required, and its absence is a `ConfigurationError` at start-up. The
+`proxy_key` and `path` are required. A proxy key that is not
+`fly_px_<environment>_...` for `production`, `staging` or `development`, or a
+missing `path`, is a `ConfigurationError` at start-up. The
 proxy matches it exactly against `PATH_INFO`, so use it as middleware, as
 above, or run it as the whole application. Do not put it behind a Rails
 `mount` or a `Rack::URLMap` entry: those move the path into `SCRIPT_NAME`, and
@@ -330,8 +332,11 @@ through it, event reads included: they need a secret key and stay unreachable
 from a browser by construction. `api_version:` changes only the version in that
 URL.
 
-The caller must present a public key from the same environment as the proxy
-key, or the request gets `401`. Requests without either `Origin` or a validated
+The caller must present a public key (`fly_pk_...`) from the same environment
+as the proxy key, or the request gets `401` and nothing is forwarded; a secret
+key is refused the same way. Upstream, every request carries the proxy key as
+`X-Fingerly-Proxy-Key` and the caller's public key as `X-API-Key`, never a
+secret key. Requests without either `Origin` or a validated
 native `X-Fingerly-SDK-Platform` header (`ios`, `android`, `react-native`,
 `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`,
 `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`,

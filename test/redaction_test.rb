@@ -25,11 +25,8 @@ class RedactionTest < Minitest::Test
   def test_the_proxy_never_shows_its_key
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: "/k7x2qm4a",
                                 client_ip: ->(_r) { "203.0.113.7" })
-    legacy = Fingerly::Proxy.new(secret_key: SECRET_KEY, path: "/k7x2qm4a",
-                                 client_ip: ->(_r) { "203.0.113.7" })
 
     assert_hidden(proxy, PROXY_KEY)
-    assert_hidden(legacy, SECRET_KEY)
     assert_includes proxy.inspect, "[redacted]"
   end
 

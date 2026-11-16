@@ -148,11 +148,10 @@ module Fingerly
     #   {ProxyRequest}. Read it from a header your own infrastructure sets,
     #   such as your load balancer's or CDN's. Never use the left-most
     #   +X-Forwarded-For+ value: the visitor writes it.
-    # @param proxy_key [String, nil] a write-only credential, +fly_px_…+, held
-    #   only on your server
-    # @param secret_key [String, nil] the deprecated alternative to
-    #   +proxy_key+. Secret read keys will be refused in the next major
-    #   version; do not pass both.
+    # @param proxy_key [String] a write-only credential, +fly_px_…+, held only
+    #   on your server. Required. Every forwarded request carries it as
+    #   +X-Fingerly-Proxy-Key+ alongside the browser's public key, which must
+    #   be scoped to the same environment.
     # @param path [String] the path the dashboard issued for this proxy, such
     #   as +/k7x2qm4a+, matched exactly against +PATH_INFO+. Required.
     # @param api_version [String] the version of the upstream ingest URL
@@ -170,13 +169,15 @@ module Fingerly
     # @raise [ConfigurationError] if a credential, path, limit or callback is
     #   missing or invalid. A proxy is wired up once at start-up, where an error is
     #   natural to handle.
-    def initialize(app = nil, client_ip:, proxy_key: nil, secret_key: nil,
+    def initialize(app = nil, client_ip:, proxy_key:,
                    path: nil, allowed_origins: nil, api_version: "v1", upstream: nil,
                    max_body_bytes: DEFAULT_MAX_BODY_BYTES, timeout: DEFAULT_TIMEOUT,
                    configure_http: nil, logger: nil, allow_insecure_loopback: false)
-      raise ConfigurationError, "A Fingerly proxy key is required" if !proxy_key && !secret_key
-      if proxy_key && secret_key
-        raise ConfigurationError, "Pass proxy_key or deprecated secret_key, not both"
+      scope = Config.scope_for(proxy_key, Config::PROXY)
+      unless scope
+        raise ConfigurationError,
+              "proxy_key must be a Fingerly proxy key, fly_px_<environment>_..., " \
+              "for the production, staging or development environment"
       end
       raise ConfigurationError, "client_ip is required" unless client_ip.respond_to?(:call)
       raise ConfigurationError, "path is required" if path.nil?
@@ -192,9 +193,8 @@ module Fingerly
       @misconfigured = []
       @misconfigured_lock = Mutex.new
       @client_ip = client_ip
-      @uses_proxy_key = !proxy_key.nil?
-      @key = proxy_key || secret_key
-      @scope = Config.parse_key(@key, @uses_proxy_key ? Config::PROXY : Config::SECRET)
+      @key = proxy_key
+      @scope = scope
       @path = Config.normalize_path(path)
       @allowed_origins = normalize_origins(allowed_origins)
       @api_version = Config.normalize_api_version(api_version)
@@ -282,7 +282,7 @@ module Fingerly
 
     def redacted_fields
       [["path", @path.inspect], ["api_version", @api_version],
-       [@uses_proxy_key ? "proxy_key" : "secret_key", Redacted::MARK]]
+       ["proxy_key", Redacted::MARK]]
     end
 
     def pass(env)
@@ -365,16 +365,16 @@ module Fingerly
       nil
     end
 
-    # Decides which key to present upstream.
+    # Checks the browser's key before anything is forwarded.
     #
-    # With a proxy key the browser must supply a public key for the same
-    # environment, which the proxy forwards alongside its own. The deprecated
-    # secret-key mode authenticates on its own.
+    # The browser must present a public key, +fly_pk_…+, for the proxy key's
+    # environment; the proxy forwards it alongside its own. A secret key, a
+    # proxy key, a public key of another environment or anything else is
+    # refused, so no credential but a public key ever travels upstream as
+    # +X-API-Key+.
     #
-    # @return [String, nil] the key to forward, or nil when unauthorised
+    # @return [String, nil] the public key to forward, or nil when unauthorised
     def upstream_key_for(presented)
-      return @key unless @uses_proxy_key
-
       browser = Config.scope_for(presented, Config::PUBLIC)
       return nil if browser.nil?
 
@@ -407,7 +407,7 @@ module Fingerly
       end
       host = non_blank(safe(request.header("host")))
       headers["x-fingerly-host"] = host if host
-      headers["x-fingerly-proxy-key"] = @key if @uses_proxy_key
+      headers["x-fingerly-proxy-key"] = @key
       FORWARDED_CLIENT_HEADERS.each do |name|
         value = non_blank(safe(request.header(name)))
         headers[name] = value if value

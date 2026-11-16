@@ -26,9 +26,59 @@ class ProxyTest < Minitest::Test
   UNPRINTABLE_CONTENT_TYPE = "text/plain\x00"
   UNPRINTABLE_ORIGIN = "https://shop.example\x07"
 
-  def test_refuses_to_start_without_a_key
+  def test_refuses_to_start_without_a_proxy_key
+    error = assert_raises(ArgumentError) do
+      Fingerly::Proxy.new(path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+    end
+    assert_match(/proxy_key/, error.message)
     assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Proxy.new(client_ip: ->(_r) { "203.0.113.7" })
+      Fingerly::Proxy.new(proxy_key: nil, path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+    end
+  end
+
+  def test_refuses_a_secret_key_keyword
+    assert_raises(ArgumentError) do
+      Fingerly::Proxy.new(secret_key: "fly_sk_production_secret", path: PATH,
+                          client_ip: ->(_r) { "203.0.113.7" })
+    end
+    error = assert_raises(ArgumentError) do
+      Fingerly::Proxy.new(proxy_key: PROXY_KEY, secret_key: "fly_sk_production_secret",
+                          path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+    end
+    assert_match(/unknown keyword: :secret_key/, error.message)
+  end
+
+  def test_refuses_a_malformed_proxy_key_with_a_clear_message
+    ["fly_px_production_", "fly_px_preview_proxy", "fly_px_production_a b",
+     "fly_px_production_proxy\n", "FLY_PX_PRODUCTION_PROXY", "", 42].each do |key|
+      error = assert_raises(Fingerly::ConfigurationError, "accepted #{key.inspect}") do
+        Fingerly::Proxy.new(proxy_key: key, path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+      end
+      assert_match(/proxy_key must be a Fingerly proxy key/, error.message)
+    end
+  end
+
+  def test_never_sends_a_secret_key_upstream
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      %w[fly_sk_production_secret fly_sk_staging_secret fly_sk_development_secret].each do |key|
+        response = post(api, PATH, "{}", "HTTP_X_API_KEY" => key)
+
+        assert_equal 401, response.status, "accepted #{key}"
+        assert_equal "Unauthorized", response.body
+        assert_equal "text/plain; charset=utf-8", response.headers["content-type"]
+        assert_equal "no-store", response.headers["cache-control"]
+      end
+
+      assert_empty api.requests
+
+      assert_equal 200, post(api, PATH, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY).status
+      forwarded = api.requests.fetch(0)
+
+      assert_equal PUBLIC_KEY, forwarded.header("x-api-key")
+      assert_equal PROXY_KEY, forwarded.header("x-fingerly-proxy-key")
+      forwarded.headers.each_value do |value|
+        refute_match(/fly_sk_/, Array(value).join(", "))
+      end
     end
   end
 
@@ -36,15 +86,6 @@ class ProxyTest < Minitest::Test
     assert_raises(ArgumentError) { Fingerly::Proxy.new(proxy_key: PROXY_KEY) }
     assert_raises(Fingerly::ConfigurationError) do
       Fingerly::Proxy.new(proxy_key: PROXY_KEY, client_ip: "not callable")
-    end
-  end
-
-  def test_refuses_both_kinds_of_key_at_once
-    assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, secret_key: "fly_sk_production_secret",
-        client_ip: ->(_r) { "203.0.113.7" }
-      )
     end
   end
 
@@ -277,21 +318,6 @@ class ProxyTest < Minitest::Test
       end
 
       assert_empty api.requests
-    end
-  end
-
-  def test_the_deprecated_secret_key_mode_authenticates_on_its_own
-    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      proxy = Fingerly::Proxy.new(
-        secret_key: "fly_sk_production_secret", path: PATH,
-        upstream: api.origin, allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
-      )
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(PATH, input: "{}", "HTTP_ORIGIN" => "https://shop.example")
-
-      assert_equal 200, response.status
-      assert_equal "fly_sk_production_secret", api.requests.first.header("x-api-key")
-      assert_nil api.requests.first.header("x-fingerly-proxy-key")
     end
   end
 

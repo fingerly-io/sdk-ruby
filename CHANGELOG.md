@@ -16,6 +16,8 @@
   and a validated native platform header are absent (never synthesizing
   `x-fingerly-origin`), forwarding `x-fingerly-host`, `sec-fetch-*` and
   `sec-ch-ua-*`, and optional `allowed_origins:` CORS preflight handling.
+- `Fingerly::Proxy` requires `proxy_key:` and checks the caller's public key
+  on every request; a secret key is never sent upstream.
 
 ## 0.2.0
 
