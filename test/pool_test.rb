@@ -88,7 +88,7 @@ class PoolTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
       built = Queue.new
       fingerly = Fingerly::Client.new(
-        secret_key: "fly_sk_production_abc123", endpoint: api.origin,
+        secret_key: "fly_sk_production_abc123", endpoint: api.origin, allow_insecure_loopback: true,
         configure_http: ->(_http) { built << :one }
       )
       2.times do

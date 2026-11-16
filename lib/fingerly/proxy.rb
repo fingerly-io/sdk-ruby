@@ -207,8 +207,8 @@ module Fingerly
       @ingest = "/api/#{@api_version}/ingest".freeze
       @max_body_bytes = Config.positive_int(max_body_bytes, "max_body_bytes")
       @transport = Transport.new(
-        origin: Config.normalize_upstream(upstream || Config::DEFAULT_ENDPOINT,
-                                          allow_insecure_loopback: allow_insecure_loopback == true),
+        origin: Config.normalize_origin(upstream || Config::DEFAULT_ENDPOINT, "upstream",
+                                        allow_insecure_loopback: allow_insecure_loopback == true),
         timeout: Config.positive_seconds(timeout, "timeout"),
         configure_http: configure_http
       )

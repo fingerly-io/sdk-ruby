@@ -136,7 +136,8 @@ module Fingerly
       ?endpoint: String?,
       ?api_version: String,
       ?timeout: Numeric,
-      ?configure_http: (^(untyped) -> void)?
+      ?configure_http: (^(untyped) -> void)?,
+      ?allow_insecure_loopback: bool
     ) -> void
     def close: () -> void
     def get: (String) -> Hash[String, untyped]

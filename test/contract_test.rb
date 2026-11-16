@@ -169,6 +169,7 @@ class ContractTest < Minitest::Test
   private
 
   def client(api)
-    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin)
+    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin,
+                         allow_insecure_loopback: true)
   end
 end

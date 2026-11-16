@@ -14,7 +14,8 @@ class RedactionTest < Minitest::Test
   COOKIE = "session=visitorcookie789"
 
   def test_the_client_never_shows_its_secret_key
-    client = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: "http://127.0.0.1:9")
+    client = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: "http://127.0.0.1:9",
+                                  allow_insecure_loopback: true)
 
     assert_hidden(client, SECRET_KEY)
     assert_hidden(client.events, SECRET_KEY)
@@ -42,7 +43,8 @@ class RedactionTest < Minitest::Test
   end
 
   def test_marshal_refuses_rather_than_writing_the_key
-    client = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: "http://127.0.0.1:9")
+    client = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: "http://127.0.0.1:9",
+                                  allow_insecure_loopback: true)
 
     assert_raises(TypeError) { Marshal.dump(client) }
   end

@@ -30,8 +30,48 @@ class ClientTest < Minitest::Test
     # Otherwise a local endpoint would be a way to smuggle a browser key into
     # an API that accepts one.
     assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Client.new(secret_key: "fly_pk_production_abc", endpoint: "http://127.0.0.1:9")
+      Fingerly::Client.new(secret_key: "fly_pk_production_abc", endpoint: "http://127.0.0.1:9",
+                           allow_insecure_loopback: true)
     end
+  end
+
+  def test_refuses_an_endpoint_that_is_not_a_bare_https_origin
+    ["https://api.example.invalid/prefix", "https://api.example.invalid/a/../b",
+     "https://api.example.invalid//", "https://api.example.invalid?", "https://api.example.invalid#",
+     "https://api.example.invalid\n", "https://api.example.invalid ", " https://api.example.invalid",
+     "https://api.example.invalid\r\nx-injected: 1", "https://api.example.invalid\t",
+     "http://api.example.invalid", "http://192.0.2.10:8080", "http://127.0.0.2", "",
+     1].each do |endpoint|
+      error = assert_raises(Fingerly::ConfigurationError, endpoint.inspect) do
+        Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: endpoint,
+                             allow_insecure_loopback: true)
+      end
+
+      refute_includes error.message, "api.example.invalid"
+      refute_includes error.message, SECRET_KEY
+    end
+  end
+
+  def test_a_plain_http_endpoint_needs_loopback_and_the_opt_in
+    ["http://127.0.0.1:9", "http://localhost:9", "http://[::1]:9"].each do |endpoint|
+      assert_raises(Fingerly::ConfigurationError, endpoint) do
+        Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: endpoint)
+      end
+      Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: endpoint,
+                           allow_insecure_loopback: true)
+    end
+  end
+
+  def test_the_endpoint_origin_is_rebuilt_from_its_parts
+    origin = ->(client) { client.instance_variable_get(:@origin) }
+
+    assert_equal "https://api.example.invalid",
+                 origin.call(Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: "https://api.example.invalid/"))
+    assert_equal "https://api.example.invalid:8443",
+                 origin.call(Fingerly::Client.new(secret_key: SECRET_KEY,
+                                                  endpoint: "https://api.example.invalid:8443"))
+    assert_equal "https://api.fingerly.io",
+                 origin.call(Fingerly::Client.new(secret_key: SECRET_KEY))
   end
 
   def test_refuses_an_unusable_endpoint
@@ -196,7 +236,8 @@ class ClientTest < Minitest::Test
   def test_the_deadline_covers_receiving_the_headers
     TricklingServer.run(interval: 0.2, lines: 50) do |server|
       fingerly = Fingerly::Client.new(
-        secret_key: SECRET_KEY, endpoint: server.origin, timeout: 0.75
+        secret_key: SECRET_KEY, endpoint: server.origin, allow_insecure_loopback: true,
+        timeout: 0.75
       )
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       assert_raises(Fingerly::TimeoutError) { fingerly.events.get("r1") }
@@ -250,7 +291,7 @@ class ClientTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
       built = 0
       fingerly = Fingerly::Client.new(
-        secret_key: SECRET_KEY, endpoint: api.origin,
+        secret_key: SECRET_KEY, endpoint: api.origin, allow_insecure_loopback: true,
         configure_http: ->(_http) { built += 1 }
       )
       3.times { fingerly.events.get("r1") }
@@ -285,7 +326,8 @@ class ClientTest < Minitest::Test
   def test_reports_an_unreachable_api_as_a_connection_failure
     # Port 9 is discard; nothing listens on it.
     fingerly = Fingerly::Client.new(
-      secret_key: SECRET_KEY, endpoint: "http://127.0.0.1:9", timeout: 5
+      secret_key: SECRET_KEY, endpoint: "http://127.0.0.1:9", allow_insecure_loopback: true,
+      timeout: 5
     )
     assert_raises(Fingerly::ConnectionError) { fingerly.events.get("r1") }
   end
@@ -293,10 +335,12 @@ class ClientTest < Minitest::Test
   private
 
   def raw_client(server)
-    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: server.origin, timeout: 5)
+    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: server.origin,
+                         allow_insecure_loopback: true, timeout: 5)
   end
 
   def client(api, timeout: 10)
-    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin, timeout: timeout)
+    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin,
+                         allow_insecure_loopback: true, timeout: timeout)
   end
 end

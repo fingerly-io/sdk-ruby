@@ -19,8 +19,13 @@ page.each { |row| puts "#{row.request_id} #{row.suspect_level}" }
 ```
 
 Event reads require `fly_sk_{production|staging|development}_` keys. Requests
-go to `https://api.fingerly.io`; `endpoint:` overrides that for a local
-API. Public, proxy, management, malformed and unsupported keys are rejected
+go to `https://api.fingerly.io`; `endpoint:` overrides that with a bare
+`https` origin, scheme, host and an optional port. A path, query, fragment,
+credentials, whitespace, a control character or plain `http` is a
+`ConfigurationError`, and the message never repeats the value. For a local
+test API, `allow_insecure_loopback: true` accepts `http://127.0.0.1`,
+`http://localhost` and `http://[::1]` (with any port); leave it off in
+production. Public, proxy, management, malformed and unsupported keys are rejected
 before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
 and never retry.

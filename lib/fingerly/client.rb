@@ -28,8 +28,11 @@ module Fingerly
 
     # @param secret_key [String] a server-only key,
     #   +fly_sk_{environment}_…+, whose prefix names the environment read
-    # @param endpoint [String, nil] overrides the Fingerly API origin, for a
-    #   local or self-hosted API
+    # @param endpoint [String, nil] overrides the Fingerly API origin: a bare
+    #   origin, scheme, host and optional port, and +https+ only
+    # @param allow_insecure_loopback [Boolean] lets +endpoint+ be a plain
+    #   +http+ origin on 127.0.0.1, localhost or [::1], for local development
+    #   and tests. Off by default.
     # @param api_version [String] the API route version
     # @param timeout [Numeric] the deadline for each request in seconds,
     #   covering the response body
@@ -39,11 +42,12 @@ module Fingerly
     # @raise [ConfigurationError] if a key, endpoint, version or timeout is
     #   invalid. Nothing is sent until then.
     def initialize(secret_key:, endpoint: nil, api_version: DEFAULT_API_VERSION,
-                   timeout: DEFAULT_TIMEOUT, configure_http: nil)
+                   timeout: DEFAULT_TIMEOUT, configure_http: nil, allow_insecure_loopback: false)
       # The key is validated even when an endpoint is given, so a public, proxy
       # or management key can never reach an API that would accept it.
       Config.parse_key(secret_key, Config::SECRET)
-      origin = Config.normalize_endpoint(endpoint || Config::DEFAULT_ENDPOINT)
+      origin = Config.normalize_origin(endpoint || Config::DEFAULT_ENDPOINT, "endpoint",
+                                       allow_insecure_loopback: allow_insecure_loopback == true)
 
       @secret_key = secret_key
       @origin = origin
