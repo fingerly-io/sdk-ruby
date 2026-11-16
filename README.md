@@ -359,11 +359,12 @@ When Fingerly cannot be reached, the visitor gets a gateway error rather than
 your application's `500`: `504 Gateway timeout` when `timeout:` (5 seconds by
 default) passes, and `502 Bad gateway` for anything else, whether the
 connection was refused or reset, the name did not resolve, or the answer was
-malformed, cut short or over 4 MiB. The whole answer is read before anything
-is written back, so a truncated response is never relayed as a success. Each
-failure logs one line, without a stack trace, to `logger:` when you pass one,
-to `rack.logger` when your server provides it, and to standard error
-otherwise.
+malformed, cut short or over 4 MiB. Redirects are never followed, and an
+upstream redirect is answered `502` as well.
+The whole answer is read before anything is written back, so a truncated
+response is never relayed as a success. Each failure logs one line, without a
+stack trace, to `logger:` when you pass one, to `rack.logger` when your server
+provides it, and to standard error otherwise.
 
 `upstream:` must use `https`. For a local test API,
 `allow_insecure_loopback: true` accepts `http://127.0.0.1`, `http://localhost`

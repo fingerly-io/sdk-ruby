@@ -323,6 +323,11 @@ module Fingerly
       # back, so a response cut short upstream is a 502 rather than a truncated
       # success.
       result = @transport.call(Net::HTTP::Post, @ingest, headers, body)
+      # A redirect is never followed, and never handed to the browser either.
+      if (300..399).cover?(result.status)
+        return upstream_failed(env, 502, "Bad gateway", "upstream answered a redirect", cors)
+      end
+
       relay(result, cors)
     rescue TimeoutError => e
       upstream_failed(env, 504, "Gateway timeout", e, cors)
@@ -364,7 +369,8 @@ module Fingerly
     # trace, nothing from the request, and nothing in the response that names
     # Fingerly.
     def upstream_failed(env, status, message, error, cors = {})
-      log(env, "fingerly proxy: #{status} #{error.message}")
+      reason = error.is_a?(Exception) ? error.message : error.to_s
+      log(env, "fingerly proxy: #{status} #{reason}")
       refuse(status, message, cors)
     end
 

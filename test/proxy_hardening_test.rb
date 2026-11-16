@@ -537,6 +537,30 @@ class ProxyHardeningTest < Minitest::Test
     end
   end
 
+  def test_a_redirect_is_never_followed_and_is_a_bad_gateway
+    handler = lambda do |req, res|
+      res.status = 307
+      res["location"] = "http://#{req.host}:#{req.port}/elsewhere"
+      res.body = ""
+    end
+    FakeAPI.run(handler) do |api|
+      [301, 302, 303, 307, 308].each do |code|
+        api.handler = lambda do |req, res|
+          handler.call(req, res)
+          res.status = code
+        end
+        response = build(api.origin).call(env_for)
+
+        assert_equal 502, response[0], "upstream #{code}"
+        assert_nil response[1]["location"]
+        assert_equal "no-store", response[1]["cache-control"]
+      end
+
+      assert_equal 5, api.requests.size
+      assert_equal ["/api/v1/ingest"], api.requests.map(&:raw_uri).uniq
+    end
+  end
+
   def test_every_local_answer_is_no_store # rubocop:disable Metrics/AbcSize
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       cors = build(api.origin, allowed_origins: ["https://app.example"])
