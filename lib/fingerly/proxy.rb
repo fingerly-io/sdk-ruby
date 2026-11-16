@@ -157,7 +157,11 @@ module Fingerly
     #   already routes that path here, as a Rails +mount+ or a +Rack::URLMap+
     #   entry does; the proxy then answers whatever it is handed.
     # @param api_version [String] the version of the upstream ingest URL
-    # @param upstream [String, nil] overrides the API origin implied by the key
+    # @param upstream [String, nil] overrides the API origin implied by the key;
+    #   +https+ only
+    # @param allow_insecure_loopback [Boolean] lets +upstream+ be a plain
+    #   +http+ origin on 127.0.0.1, localhost or [::1], for local development
+    #   and tests. Off by default.
     # @param max_body_bytes [Integer] larger request bodies are refused with 413
     # @param timeout [Numeric] how long to wait for Fingerly, in seconds
     # @param configure_http [Proc, nil] receives the +Net::HTTP+ before it connects
@@ -170,7 +174,7 @@ module Fingerly
     def initialize(app = nil, client_ip:, proxy_key: nil, secret_key: nil,
                    path: nil, allowed_origins: nil, api_version: "v1", upstream: nil,
                    max_body_bytes: DEFAULT_MAX_BODY_BYTES, timeout: DEFAULT_TIMEOUT,
-                   configure_http: nil, logger: nil)
+                   configure_http: nil, logger: nil, allow_insecure_loopback: false)
       raise ConfigurationError, "A Fingerly proxy key is required" if !proxy_key && !secret_key
       if proxy_key && secret_key
         raise ConfigurationError, "Pass proxy_key or deprecated secret_key, not both"
@@ -200,7 +204,8 @@ module Fingerly
       @ingest = "/api/#{@api_version}/ingest".freeze
       @max_body_bytes = Config.positive_int(max_body_bytes, "max_body_bytes")
       @transport = Transport.new(
-        origin: Config.normalize_endpoint(upstream || Config::DEFAULT_ENDPOINT),
+        origin: Config.normalize_upstream(upstream || Config::DEFAULT_ENDPOINT,
+                                          allow_insecure_loopback: allow_insecure_loopback == true),
         timeout: Config.positive_seconds(timeout, "timeout"),
         configure_http: configure_http
       )
@@ -390,10 +395,9 @@ module Fingerly
     # Builds the headers for the forwarded request.
     #
     # Nothing is copied wholesale: all incoming +x-fingerly-*+, +cookie+ and
-    # +authorization+ headers are stripped, only a validated
-    # +x-fingerly-sdk-platform+ is restored, and +x-fingerly-origin+ is sent
-    # only when incoming +origin+ is non-empty (never synthesized from +host+
-    # or the request URL).
+    # +authorization+ headers are stripped. +x-fingerly-origin+ is sent when
+    # incoming +origin+ is non-empty (never synthesized from +host+ or the
+    # request URL); otherwise a validated +x-fingerly-sdk-platform+ is restored.
     #
     # @return [Hash]
     def upstream_headers(request, api_key, address, origin, sdk_platform)
@@ -405,8 +409,13 @@ module Fingerly
         "x-fingerly-proxy-version" => PROXY_VERSION,
         "user-agent" => USER_AGENT
       }
-      headers["x-fingerly-origin"] = origin if origin
-      headers["x-fingerly-sdk-platform"] = sdk_platform if sdk_platform
+      # One channel only. The API refuses a proxied request that carries both,
+      # and a browser Origin wins, as it does for a request sent directly.
+      if origin
+        headers["x-fingerly-origin"] = origin
+      elsif sdk_platform
+        headers["x-fingerly-sdk-platform"] = sdk_platform
+      end
       host = non_blank(safe(request.header("host")))
       headers["x-fingerly-host"] = host if host
       headers["x-fingerly-proxy-key"] = @key if @uses_proxy_key

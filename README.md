@@ -341,13 +341,16 @@ native `X-Fingerly-SDK-Platform` header (`ios`, `android`, `react-native`,
 `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`,
 `kotlin-multiplatform`) are rejected locally with `400` (`missing_origin`), and
 `x-fingerly-origin` is never synthesized from `Host`, `Referer` or the request
-URL. Bodies over 1 MiB get `413`, enforced while reading rather than after
+URL. A request is forwarded on one channel only: with an `Origin` the proxy
+sends `x-fingerly-origin` and drops the platform header, and without one it
+sends the validated platform. Bodies over 1 MiB get `413`, enforced while reading rather than after
 buffering. That bounds what the proxy holds. A server that buffers the whole
 request before calling the application, as Puma does, has already read it by
 then, so bound request bodies there with the server's or the load balancer's own
 limit as well. Falcon streams the body, so there the proxy stops reading at the
 limit. All incoming `x-fingerly-*`, `cookie` and `authorization` headers are
-stripped, restoring only a validated `x-fingerly-sdk-platform` alongside
+stripped, restoring only a validated `x-fingerly-sdk-platform` (when there is
+no `Origin`) alongside
 `x-fingerly-host`, `idempotency-key`, `sec-fetch-*` and `sec-ch-ua-*`. The proxy
 reports itself upstream as `ruby/0.3.0` in `x-fingerly-proxy-version`, which the
 dashboard shows per proxy.
@@ -361,6 +364,11 @@ is written back, so a truncated response is never relayed as a success. Each
 failure logs one line, without a stack trace, to `logger:` when you pass one,
 to `rack.logger` when your server provides it, and to standard error
 otherwise.
+
+`upstream:` must use `https`. For a local test API,
+`allow_insecure_loopback: true` accepts `http://127.0.0.1`, `http://localhost`
+and `http://[::1]` (with any port), and no other plain `http` origin; leave it
+off in production.
 
 Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining`
 and `retry-after` are relayed back, plus `cache-control: no-store` set by the

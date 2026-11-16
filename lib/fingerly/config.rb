@@ -85,6 +85,29 @@ module Fingerly
       value.to_s.sub(%r{/+\z}, "")
     end
 
+    # Hosts a plain HTTP proxy upstream may name, and only with
+    # +allow_insecure_loopback: true+.
+    LOOPBACK_HOSTS = %w[127.0.0.1 localhost [::1]].freeze
+
+    # Validates the proxy's upstream option, which carries the proxy key.
+    #
+    # The scheme is +https+; plain +http+ is accepted only for 127.0.0.1,
+    # localhost or [::1], and only when the caller opts in for development.
+    #
+    # @return [String] the origin without trailing slashes
+    # @raise [ConfigurationError] if the value is anything else
+    def normalize_upstream(value, allow_insecure_loopback: false)
+      origin = normalize_endpoint(value)
+      uri = URI.parse(origin)
+      if uri.scheme == "http" && !(allow_insecure_loopback && LOOPBACK_HOSTS.include?(uri.host))
+        raise ConfigurationError,
+              "upstream must use https; plain http is allowed only for 127.0.0.1, " \
+              "localhost or [::1] with allow_insecure_loopback: true"
+      end
+
+      origin
+    end
+
     # Validates an API route version before it is spliced into a URL.
     #
     # @raise [ConfigurationError] if the version is not of that shape

@@ -17,8 +17,8 @@ Metrics/AbcSize:
 Metrics/ModuleLength:
   Max: 150
 Metrics/ParameterLists:
-  Max: 12
-  MaxOptionalParameters: 12
+  Max: 13
+  MaxOptionalParameters: 13
 Metrics/CyclomaticComplexity:
   Max: 15
 Metrics/PerceivedComplexity:

@@ -97,7 +97,7 @@ class ProxyTest < Minitest::Test
     calls = 0
     proxy = Fingerly::Proxy.new(
       proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9", logger: QUIET,
-      client_ip: lambda { |_r|
+      allow_insecure_loopback: true, client_ip: lambda { |_r|
         calls += 1
         "203.0.113.7\xFF"
       }
@@ -232,7 +232,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, api_version: "v2", upstream: api.origin,
-        client_ip: ->(_r) { "203.0.113.7" }
+        allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
         PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
@@ -291,7 +291,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         secret_key: "fly_sk_production_secret", path: PATH,
-        upstream: api.origin, client_ip: ->(_r) { "203.0.113.7" }
+        upstream: api.origin, allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
                                   .post(PATH, input: "{}", "HTTP_ORIGIN" => "https://shop.example")
@@ -330,7 +330,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
-        client_ip: ->(_r) { INJECTED_IP }
+        allow_insecure_loopback: true, client_ip: ->(_r) { INJECTED_IP }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
         PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
@@ -375,7 +375,7 @@ class ProxyTest < Minitest::Test
     logger = Object.new
     logger.define_singleton_method(:warn) { |line| lines << line }
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9",
-                                logger: logger, client_ip: ->(_r) {})
+                                allow_insecure_loopback: true, logger: logger, client_ip: ->(_r) {})
     3.times do
       Rack::MockRequest.new(proxy).post(
         PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
@@ -560,7 +560,7 @@ class ProxyTest < Minitest::Test
     logger.define_singleton_method(:warn) { |line| lines << line }
     proxy = Fingerly::Proxy.new(
       proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9", logger: logger,
-      client_ip: ->(_r) { "203.0.113.7" }
+      allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
     )
     Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
       PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
@@ -577,7 +577,7 @@ class ProxyTest < Minitest::Test
     logger = Object.new
     logger.define_singleton_method(:warn) { |line| lines << line }
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9",
-                                client_ip: ->(_r) { "203.0.113.7" })
+                                allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" })
     Rack::MockRequest.new(proxy).post(
       PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY,
             "HTTP_ORIGIN" => "https://shop.example", "rack.logger" => logger
@@ -615,7 +615,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(handler) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET, timeout: 0.3,
-        client_ip: ->(_r) { "203.0.113.7" }
+        allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
       response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
         PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
@@ -629,7 +629,7 @@ class ProxyTest < Minitest::Test
     TricklingServer.run(interval: 0.2, lines: 50) do |server|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: server.origin, logger: QUIET, timeout: 0.75,
-        client_ip: ->(_r) { "203.0.113.7" }
+        allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
@@ -736,7 +736,7 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
-        client_ip: ->(request) { request.header("CF-Connecting-IP") }
+        allow_insecure_loopback: true, client_ip: ->(request) { request.header("CF-Connecting-IP") }
       )
       Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
         PATH, input: "{}",
@@ -755,7 +755,7 @@ class ProxyTest < Minitest::Test
       seen = nil
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
-        client_ip: lambda { |request|
+        allow_insecure_loopback: true, client_ip: lambda { |request|
           seen = request
           request.peer_host
         }
@@ -917,7 +917,8 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, allowed_origins: ["https://app.example"],
-        upstream: api.origin, logger: QUIET, client_ip: ->(_r) { "203.0.113.7" }
+        upstream: api.origin, allow_insecure_loopback: true, logger: QUIET,
+        client_ip: ->(_r) { "203.0.113.7" }
       )
       mock = Rack::MockRequest.new(Rack::Lint.new(proxy))
 
@@ -945,7 +946,7 @@ class ProxyTest < Minitest::Test
 
   def post_with_client_ip(api, callback, **env)
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
-                                logger: QUIET, client_ip: callback)
+                                allow_insecure_loopback: true, logger: QUIET, client_ip: callback)
     headers = { "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example" }.merge(env)
     Rack::MockRequest.new(Rack::Lint.new(proxy)).post(PATH, input: "{}", **headers)
   end
@@ -962,7 +963,8 @@ class ProxyTest < Minitest::Test
     Fingerly::Proxy.new(
       app,
       proxy_key: PROXY_KEY, path: path, upstream: upstream, logger: QUIET,
-      max_body_bytes: max_body_bytes, client_ip: ->(_r) { "203.0.113.7" }
+      allow_insecure_loopback: true, max_body_bytes: max_body_bytes,
+      client_ip: ->(_r) { "203.0.113.7" }
     )
   end
 
