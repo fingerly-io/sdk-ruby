@@ -160,8 +160,8 @@ module Fingerly
     #   already routes that path here, as a Rails +mount+ or a +Rack::URLMap+
     #   entry does; the proxy then answers whatever it is handed.
     # @param api_version [String] the version of the upstream ingest URL
-    # @param upstream [String, nil] overrides the API origin implied by the key;
-    #   +https+ only
+    # @param upstream [String, nil] overrides the API origin implied by the key:
+    #   a bare origin, scheme, host and optional port, and +https+ only
     # @param allow_insecure_loopback [Boolean] lets +upstream+ be a plain
     #   +http+ origin on 127.0.0.1, localhost or [::1], for local development
     #   and tests. Off by default.
@@ -377,6 +377,8 @@ module Fingerly
     # Answers a failed upstream call and logs one line about it: no stack
     # trace, nothing from the request, and nothing in the response that names
     # Fingerly.
+    # The line names the failure kind only, never the upstream host, port, URL
+    # or a key.
     def upstream_failed(env, status, message, error, cors = {})
       reason = error.is_a?(Exception) ? error.message : error.to_s
       log(env, "fingerly proxy: #{status} #{reason}")

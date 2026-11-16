@@ -135,6 +135,27 @@ class ProxyHardeningTest < Minitest::Test
     build("https://upstream.invalid", allow_insecure_loopback: false)
   end
 
+  def test_an_upstream_that_is_not_a_bare_origin_is_refused
+    ["https://upstream.invalid/prefix", "https://upstream.invalid/a/../b", "https://upstream.invalid//",
+     "https://upstream.invalid\n", "https://upstream.invalid ", " https://upstream.invalid",
+     "https://upstream.invalid\r\nx-injected: 1", "https://upstream.invalid\t", "https://upstream.invalid?",
+     "https://upstream.invalid#", "https://upstream.invalid/?x", "", 1].each do |upstream|
+      error = assert_raises(Fingerly::ConfigurationError, upstream.inspect) { build(upstream) }
+
+      refute_includes error.message, "upstream.invalid"
+    end
+  end
+
+  def test_the_upstream_origin_is_rebuilt_from_its_parts
+    transport = lambda { |proxy|
+      proxy.instance_variable_get(:@transport).instance_variable_get(:@uri).to_s
+    }
+
+    assert_equal "https://upstream.invalid", transport.call(build("https://upstream.invalid/"))
+    assert_equal "https://upstream.invalid:8443", transport.call(build("https://upstream.invalid:8443"))
+    assert_equal "https://api.fingerly.io", transport.call(build(nil))
+  end
+
   # ---- A: request headers --------------------------------------------------
 
   def test_upstream_headers_are_an_allowlist_and_smuggled_values_never_arrive
@@ -430,6 +451,13 @@ class ProxyHardeningTest < Minitest::Test
      "https://", "https:///x", "javascript:alert(1)", "https://127.0.0.1\n.evil.example",
      "x\nhttps://127.0.0.1", "https://127.0.0.1 x"].each do |upstream|
       assert_raises(Fingerly::ConfigurationError, upstream.inspect) { build(upstream) }
+    end
+  end
+
+  def test_a_path_on_the_upstream_option_is_refused
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      assert_raises(Fingerly::ConfigurationError) { build("#{api.origin}/prefix/x") }
+      assert_empty api.requests
     end
   end
 

@@ -368,12 +368,15 @@ upstream redirect or a status outside `200` to `599` is answered `502` as well.
 The whole answer is read before anything is written back, so a truncated
 response is never relayed as a success. Each failure logs one line, without a
 stack trace, to `logger:` when you pass one, to `rack.logger` when your server
-provides it, and to standard error otherwise.
+provides it, and to standard error otherwise. The line names the kind of
+failure only, never the upstream address or a key.
 
-`upstream:` must use `https`. For a local test API,
-`allow_insecure_loopback: true` accepts `http://127.0.0.1`, `http://localhost`
-and `http://[::1]` (with any port), and no other plain `http` origin; leave it
-off in production.
+`upstream:` takes a bare origin, scheme, host and an optional port, such as
+`https://api.fingerly.io`. A path, query, fragment, credentials, whitespace or
+a control character is a `ConfigurationError`, and so is plain `http`. For a
+local test API, `allow_insecure_loopback: true` accepts `http://127.0.0.1`,
+`http://localhost` and `http://[::1]` (with any port), and nothing else; leave
+it off in production.
 
 Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining`
 and `retry-after` are relayed back, plus `cache-control: no-store` set by the

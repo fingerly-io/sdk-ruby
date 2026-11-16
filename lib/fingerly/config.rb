@@ -89,23 +89,42 @@ module Fingerly
     # +allow_insecure_loopback: true+.
     LOOPBACK_HOSTS = %w[127.0.0.1 localhost [::1]].freeze
 
+    # The message for any upstream that is not a bare origin. It never repeats
+    # the value, which may have been pasted from somewhere it should not be.
+    UPSTREAM_SHAPE =
+      "upstream must be https://host or https://host:port, with no path, query, " \
+      "fragment, credentials, whitespace or control characters"
+
     # Validates the proxy's upstream option, which carries the proxy key.
     #
-    # The scheme is +https+; plain +http+ is accepted only for 127.0.0.1,
+    # Only a bare origin is accepted: scheme, host and an optional port. The
+    # scheme is +https+; plain +http+ is accepted only for 127.0.0.1,
     # localhost or [::1], and only when the caller opts in for development.
+    # The origin returned is rebuilt from the parsed parts, never the input.
     #
-    # @return [String] the origin without trailing slashes
+    # @return [String] the origin, such as +https://api.fingerly.io+
     # @raise [ConfigurationError] if the value is anything else
     def normalize_upstream(value, allow_insecure_loopback: false)
-      origin = normalize_endpoint(value)
-      uri = URI.parse(origin)
+      printable = value.is_a?(String) && value.b.match?(/\A[\x21-\x7e]+\z/)
+      raise ConfigurationError, UPSTREAM_SHAPE unless printable
+
+      uri = begin
+        URI.parse(value)
+      rescue URI::InvalidURIError
+        nil
+      end
+      bare = uri.is_a?(URI::HTTP) && !uri.host.to_s.empty? && uri.userinfo.nil? &&
+             uri.query.nil? && uri.fragment.nil? && ["", "/"].include?(uri.path.to_s)
+      raise ConfigurationError, UPSTREAM_SHAPE unless bare
+
       if uri.scheme == "http" && !(allow_insecure_loopback && LOOPBACK_HOSTS.include?(uri.host))
         raise ConfigurationError,
               "upstream must use https; plain http is allowed only for 127.0.0.1, " \
               "localhost or [::1] with allow_insecure_loopback: true"
       end
 
-      origin
+      port = uri.port == uri.default_port ? "" : ":#{uri.port}"
+      "#{uri.scheme}://#{uri.host}#{port}"
     end
 
     # Validates an API route version before it is spliced into a URL.
