@@ -23,6 +23,13 @@
   event's held DeviceCheck token once, raise `Fingerly::DeviceCheckError`
   with a predicate per code and `apple_status`, and retry a `503` or a
   transport failure with the same request only.
+- Added `fingerly.events.verify(request_id, max_age_seconds:, tag:,
+  consume:)`, which reads an event and checks it exists, is recent
+  (`max_age_seconds`, 300 by default), carries the expected `tag`, is
+  identifiable and scored, then consumes it once, answering a
+  `Fingerly::EventVerification` with `ok?` and a `reason`, and
+  `fingerly.events.consume(request_id)` with a typed
+  `Fingerly::EventAlreadyConsumedError` for `event_already_consumed`.
 
 ## 0.2.0
 

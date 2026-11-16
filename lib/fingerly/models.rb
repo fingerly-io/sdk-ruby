@@ -90,10 +90,17 @@ module Fingerly
     #   API adds after this SDK was released needs no upgrade
     attr_reader :raw
 
+    # @param lenient_time [Boolean] keeps a missing or malformed
+    #   +occurred_at+ as nil rather than raising, for +events.verify+, which
+    #   answers +too_old+ for it
     # @api private
-    def initialize(payload)
+    def initialize(payload, lenient_time: false)
       STRING_FIELDS.each { |name| instance_variable_set(:"@#{name}", payload[name]) }
-      @occurred_at = Models.parse_instant(payload["occurred_at"])
+      @occurred_at = if lenient_time
+                       Models.rfc3339(payload["occurred_at"])
+                     else
+                       Models.parse_instant(payload["occurred_at"])
+                     end
       @suspect_score = payload["suspect_score"]
       @has_document = payload["has_document"] ? true : false
       @triggers = Array(payload["triggers"]).map { |item| EventTrigger.new(item) }.freeze
@@ -150,6 +157,71 @@ module Fingerly
 
     def inspect
       "#<Fingerly::EventPage page=#{page} page_size=#{page_size} rows=#{rows.size}>"
+    end
+  end
+
+  # The first consumption of an event, from +fingerly.events.consume+.
+  class EventConsumption
+    # @return [String, nil] the consumed event's request id
+    attr_reader :request_id
+    # @return [String, nil] when it was consumed, as the API sent it (RFC 3339)
+    attr_reader :consumed_at
+    # @return [Boolean] true for the call that consumed the event
+    attr_reader :first
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    def initialize(payload)
+      @request_id = payload["request_id"].is_a?(String) ? payload["request_id"] : nil
+      @consumed_at = payload["consumed_at"].is_a?(String) ? payload["consumed_at"] : nil
+      @first = payload["first"] == true
+      @raw = payload
+      freeze
+    end
+
+    def first? = first
+
+    def inspect
+      "#<Fingerly::EventConsumption request_id=#{request_id.inspect} first=#{first}>"
+    end
+  end
+
+  # The answer of +fingerly.events.verify+.
+  #
+  # {#reason} is +""+ when {#ok?}, and otherwise the first check that failed,
+  # as one of the wire strings below. The score is not checked: apply your own
+  # policy to {#event} after {#ok?}.
+  class EventVerification
+    NOT_FOUND = "not_found"
+    TOO_OLD = "too_old"
+    TAG_MISMATCH = "tag_mismatch"
+    UNIDENTIFIABLE = "unidentifiable"
+    UNSCORED = "unscored"
+    ALREADY_CONSUMED = "already_consumed"
+
+    # Every reason, in the order the checks run.
+    REASONS = [NOT_FOUND, TOO_OLD, TAG_MISMATCH, UNIDENTIFIABLE, UNSCORED, ALREADY_CONSUMED].freeze
+
+    # @return [Boolean] whether every check passed
+    attr_reader :ok
+    # @return [String] the failed check, or +""+ when {#ok}
+    attr_reader :reason
+    # @return [Event, nil] the event read; nil only for +not_found+
+    attr_reader :event
+
+    # @api private
+    def initialize(reason:, event:)
+      @ok = reason.empty?
+      @reason = reason
+      @event = event
+      freeze
+    end
+
+    def ok? = ok
+
+    def inspect
+      "#<Fingerly::EventVerification ok=#{ok} reason=#{reason.inspect}>"
     end
   end
 
@@ -264,6 +336,18 @@ module Fingerly
       Time.iso8601(value.to_s)
     rescue ArgumentError, TypeError
       raise Error, "Fingerly API returned a timestamp that is not RFC 3339"
+    end
+
+    RFC3339 = /\A\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})\z/
+
+    # A strict RFC 3339 date-time, or nil for anything else, a date alone
+    # included.
+    def rfc3339(value)
+      return nil unless value.is_a?(String) && value.match?(RFC3339)
+
+      Time.iso8601(value.upcase)
+    rescue ArgumentError
+      nil
     end
   end
 end

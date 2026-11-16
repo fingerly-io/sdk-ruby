@@ -207,15 +207,58 @@ integrity signal constants on `Fingerly::EventTrigger`:
 
 ## Verify a backend action
 
-Read the event with a server-only key. Check that its tag matches your action,
-that it is recent, that its environment is correct, and that it was scored.
-Apply your own policy to the server's verdict. A pending event (`pending?`)
-is not a verdict: retry after `retry_after` seconds or verify asynchronously,
-rather than refusing the action. Do not authorize an action using scores or
-visitor identifiers supplied by the browser. Tags correlate events; they do
-not replace your application's authentication or replay protection. A tag must
-never hold a personal identifier, such as a user ID, email, install ID or
-advertising ID, because the server keeps tags in long-lived rollups.
+`fingerly.events.verify` reads the event with the server-only key, checks
+that it can back the action, and consumes it, so one event backs one
+decision:
+
+```ruby
+def authorize_checkout(fingerly, request_id)
+  result = fingerly.events.verify(request_id, tag: "checkout") # max_age_seconds: 300, consume: true
+  return "refuse" unless result.ok? # result.reason names the failed check
+
+  # The score policy is yours: verify never judges the score.
+  result.event.suspect_level == "low" ? "allow" : "review"
+rescue Fingerly::APIError => e
+  return "retry later" if e.pending? # not decided yet: read again after e.retry_after
+
+  raise
+end
+```
+
+The checks run in this order and stop at the first failure, whose wire string
+is `result.reason` (`""` when `result.ok?`), with a constant on
+`Fingerly::EventVerification`:
+
+1. `not_found` (`NOT_FOUND`): the request id was never issued, or the event is
+   past retention. `result.event` is `nil` for this reason only.
+2. `too_old` (`TOO_OLD`): the event occurred more than `max_age_seconds`
+   ago (300 by default), or carries no readable `occurred_at`.
+3. `tag_mismatch` (`TAG_MISMATCH`): `tag:` was given and the event's tag is not
+   exactly it. Without `tag:` nothing is compared; an empty tag raises
+   `Fingerly::ConfigurationError`.
+4. `unidentifiable` (`UNIDENTIFIABLE`): `event.visitor_id` is empty.
+5. `unscored` (`UNSCORED`): the event has no suspect score.
+6. `already_consumed` (`ALREADY_CONSUMED`): another call consumed the event
+   first.
+
+The consume runs last, only when every other check passed, so a failed check
+leaves the event unused. Pass `consume: false` to check without consuming. An
+invalid option raises `Fingerly::ConfigurationError` before anything is sent.
+Any other failure raises as it does for `events.get`. A pending event
+(`pending?`) is not a verdict: retry after `retry_after` seconds or verify
+asynchronously, rather than refusing the action.
+
+`fingerly.events.consume(request_id)` is the consume on its own. It returns a
+`Fingerly::EventConsumption` (`request_id`, `consumed_at`, `first?`) the first
+time, is never retried, and raises `Fingerly::EventAlreadyConsumedError`, a
+`Fingerly::APIError` with `event_already_consumed?` true and the first
+`consumed_at`, every time after.
+
+Do not authorize an action using scores or visitor identifiers supplied by the
+browser. Tags correlate events; they do not replace your application's
+authentication. A tag must never hold a personal identifier, such as a user
+ID, email, install ID or advertising ID, because the server keeps tags in
+long-lived rollups.
 
 ## DeviceCheck bits
 

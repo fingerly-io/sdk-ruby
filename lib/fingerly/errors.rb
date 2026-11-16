@@ -81,6 +81,39 @@ module Fingerly
     def pending?
       status == 404 && code == "event_pending"
     end
+
+    # Whether this is a consume for an event that was already consumed
+    # (+409 event_already_consumed+). Such an answer raises
+    # {EventAlreadyConsumedError}.
+    #
+    # @return [Boolean]
+    def event_already_consumed?
+      status == 409 && code == EventAlreadyConsumedError::CODE
+    end
+  end
+
+  # Raised when +fingerly.events.consume+ finds the event already consumed
+  # (+409 event_already_consumed+).
+  #
+  # It is an {APIError}, so +rescue Fingerly::APIError+ still catches it.
+  #
+  #   begin
+  #     fingerly.events.consume(request_id)
+  #   rescue Fingerly::EventAlreadyConsumedError => e
+  #     return "refuse" # another decision already used it, at e.consumed_at
+  #   end
+  class EventAlreadyConsumedError < APIError
+    CODE = "event_already_consumed"
+
+    # @return [String, nil] when the event was first consumed, as the API
+    #   sent it (RFC 3339), or nil when the answer did not say
+    attr_reader :consumed_at
+
+    # @api private
+    def initialize(consumed_at: nil, **)
+      super(**)
+      @consumed_at = consumed_at
+    end
   end
 
   # Raised for any non-2xx answer to a DeviceCheck read or write.

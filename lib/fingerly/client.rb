@@ -125,6 +125,31 @@ module Fingerly
       decode(result.body)
     end
 
+    # Performs one authenticated consume, a POST with no body, and returns
+    # the decoded body.
+    #
+    # Never retried, like a read.
+    #
+    # @raise [EventAlreadyConsumedError] on +409 event_already_consumed+
+    # @raise [APIError] on any other non-2xx response
+    # @api private
+    def post_consume(path)
+      result = @transport.call(
+        Net::HTTP::Post, @base_path + path,
+        {
+          "x-api-key" => @secret_key,
+          "accept" => "application/json",
+          "user-agent" => USER_AGENT,
+          # No body at all, stated, so nothing in between waits for one.
+          "content-length" => "0"
+        }.freeze,
+        nil
+      )
+      raise consume_error(result) unless (200..299).cover?(result.status)
+
+      decode(result.body)
+    end
+
     # Attempts in all for one DeviceCheck spend, the first included.
     DEVICE_CHECK_ATTEMPTS = 3
 
@@ -163,6 +188,32 @@ module Fingerly
         status: error.status, code: error.code, details: error.details,
         request_id: error.request_id, retry_after: error.retry_after
       )
+    end
+
+    # The already-consumed answer's shape is read tolerantly: its code from
+    # the error envelope or the top level, and its +consumed_at+ from the top
+    # level, the envelope, or a +details+ entry.
+    def consume_error(result)
+      error = api_error(result)
+      envelope = error_envelope(result.body)
+      code = error.code || (envelope["code"].is_a?(String) ? redact(envelope["code"]) : nil)
+      return error unless result.status == 409 && code == EventAlreadyConsumedError::CODE
+
+      EventAlreadyConsumedError.new(
+        status: error.status, code: code, details: error.details,
+        request_id: error.request_id, retry_after: error.retry_after,
+        consumed_at: consumed_at(envelope, error.details)
+      )
+    end
+
+    def consumed_at(envelope, details)
+      nested = envelope["error"].is_a?(Hash) ? envelope["error"]["consumed_at"] : nil
+      entry = details.is_a?(Array) &&
+              details.find { |item| item.is_a?(Hash) && item["field"] == "consumed_at" }
+      found = [envelope["consumed_at"], nested, entry && entry["issue"]].find do |value|
+        value.is_a?(String) && !value.empty?
+      end
+      redact(found)
     end
 
     def redacted_fields
@@ -296,6 +347,109 @@ module Fingerly
       EventPage.new(@client.get("/events#{suffix}"))
     end
 
+    # The age past which {#verify} answers +too_old+, in seconds.
+    DEFAULT_MAX_AGE_SECONDS = 300
+
+    # Marks an event consumed, once. Every later call for the same event
+    # raises {EventAlreadyConsumedError}, so one event backs one decision.
+    #
+    # Never retried.
+    #
+    # @param request_id [String] the +request_id+ returned by identification
+    # @return [EventConsumption]
+    # @raise [EventAlreadyConsumedError] when the event was already consumed;
+    #   see {EventAlreadyConsumedError#consumed_at}
+    # @raise [APIError] on any other non-2xx response, such as
+    #   +404 event_not_found+
+    # @raise [TimeoutError] if the request exceeds the client timeout
+    def consume(request_id)
+      EventConsumption.new(@client.post_consume(consume_path(Events.segment(request_id))))
+    end
+
+    # Reads an event and checks it can back a backend action, then consumes
+    # it.
+    #
+    # The checks run in this order and stop at the first failure, which
+    # becomes {EventVerification#reason}: +not_found+, +too_old+ (older than
+    # +max_age_seconds+, or with no readable +occurred_at+), +tag_mismatch+
+    # (only when +tag+ is given), +unidentifiable+ (empty +visitor_id+),
+    # +unscored+ (no +suspect_score+), then +already_consumed+ from the
+    # consume, which runs last and only when everything else passed. The score
+    # itself is never judged: that policy is the caller's.
+    #
+    # @param request_id [String] the +request_id+ returned by identification
+    # @param max_age_seconds [Integer] the oldest event accepted, in seconds
+    # @param tag [String, nil] the tag the event must carry exactly; nil
+    #   skips the check
+    # @param consume [Boolean] false skips the consume
+    # @return [EventVerification]
+    # @raise [ConfigurationError] for an invalid option or request id; nothing
+    #   is sent
+    # @raise [APIError] for any failure other than +404 event_not_found+ and
+    #   +409 event_already_consumed+, +404 event_pending+ included: a pending
+    #   event is not a verdict
+    # @raise [TimeoutError, ConnectionError] as for {#get}
+    def verify(request_id, max_age_seconds: DEFAULT_MAX_AGE_SECONDS, tag: nil, consume: true)
+      Events.verify_options(max_age_seconds, tag, consume)
+      segment = Events.segment(request_id)
+
+      begin
+        payload = @client.get("/events/#{segment}")
+      rescue APIError => e
+        raise unless e.event_not_found?
+
+        return EventVerification.new(reason: EventVerification::NOT_FOUND, event: nil)
+      end
+
+      event = Event.new(payload, lenient_time: true)
+      reason = Events.failed_check(event, max_age_seconds, tag)
+      return EventVerification.new(reason: reason || "", event: event) if reason || !consume
+
+      begin
+        @client.post_consume(consume_path(segment))
+      rescue EventAlreadyConsumedError
+        return EventVerification.new(reason: EventVerification::ALREADY_CONSUMED, event: event)
+      rescue APIError => e
+        raise unless e.event_not_found?
+
+        return EventVerification.new(reason: EventVerification::NOT_FOUND, event: nil)
+      end
+      EventVerification.new(reason: "", event: event)
+    end
+
+    # @raise [ConfigurationError] for an option {#verify} cannot apply
+    # @api private
+    def self.verify_options(max_age_seconds, tag, consume)
+      unless max_age_seconds.is_a?(Integer) && max_age_seconds.positive?
+        raise ConfigurationError, "max_age_seconds must be a positive Integer"
+      end
+      # An empty tag would match every untagged event, so it is refused rather
+      # than read as no check.
+      unless tag.nil? || (tag.is_a?(String) && !tag.empty?)
+        raise ConfigurationError, "tag must be a non-empty String or nil"
+      end
+      return if [true, false].include?(consume)
+
+      raise ConfigurationError, "consume must be true or false"
+    end
+
+    # The first check {#verify} fails before the consume, or nil.
+    #
+    # @api private
+    def self.failed_check(event, max_age_seconds, tag)
+      occurred_at = event.occurred_at
+      # A future time passes; a missing or unreadable one fails closed.
+      if occurred_at.nil? || Time.now - occurred_at > max_age_seconds
+        return EventVerification::TOO_OLD
+      end
+
+      return EventVerification::TAG_MISMATCH if tag && (event.tag || "") != tag
+      return EventVerification::UNIDENTIFIABLE if event.visitor_id.nil? || event.visitor_id.empty?
+      return EventVerification::UNSCORED unless event.scored?
+
+      nil
+    end
+
     # A request id as one escaped path segment.
     #
     # @raise [ConfigurationError] for an id no escaping can keep in its segment
@@ -335,6 +489,10 @@ module Fingerly
     end
 
     private
+
+    def consume_path(segment)
+      "/events/#{segment}/consume"
+    end
 
     def redacted_fields
       []

@@ -30,6 +30,22 @@ module Fingerly
     ) -> void
     def event_not_found?: () -> bool
     def pending?: () -> bool
+    def event_already_consumed?: () -> bool
+  end
+
+  class EventAlreadyConsumedError < APIError
+    CODE: String
+
+    attr_reader consumed_at: String?
+
+    def initialize: (
+      status: Integer,
+      ?code: String?,
+      ?details: untyped,
+      ?request_id: String?,
+      ?retry_after: Integer?,
+      ?consumed_at: String?
+    ) -> void
   end
 
   class DeviceCheckError < APIError
@@ -109,13 +125,13 @@ module Fingerly
     attr_reader visitor_kind: String?
     attr_reader suspect_level: String?
 
-    attr_reader occurred_at: Time
+    attr_reader occurred_at: Time?
     attr_reader suspect_score: Integer?
     attr_reader triggers: Array[EventTrigger]
     attr_reader document: Hash[String, untyped]?
     attr_reader raw: Hash[String, untyped]
 
-    def initialize: (Hash[String, untyped]) -> void
+    def initialize: (Hash[String, untyped], ?lenient_time: bool) -> void
     def has_document?: () -> bool
     def scored?: () -> bool
   end
@@ -131,6 +147,33 @@ module Fingerly
     def initialize: (Hash[String, untyped]) -> void
     def each: () { (Event) -> void } -> Array[Event]
             | () -> Enumerator[Event, Array[Event]]
+  end
+
+  class EventConsumption
+    attr_reader request_id: String?
+    attr_reader consumed_at: String?
+    attr_reader first: bool
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+    def first?: () -> bool
+  end
+
+  class EventVerification
+    NOT_FOUND: String
+    TOO_OLD: String
+    TAG_MISMATCH: String
+    UNIDENTIFIABLE: String
+    UNSCORED: String
+    ALREADY_CONSUMED: String
+    REASONS: Array[String]
+
+    attr_reader ok: bool
+    attr_reader reason: String
+    attr_reader event: Event?
+
+    def initialize: (reason: String, event: Event?) -> void
+    def ok?: () -> bool
   end
 
   class DeviceCheckBits
@@ -189,6 +232,7 @@ module Fingerly
     def close: () -> void
     def get: (String) -> Hash[String, untyped]
     def spend_device_check: (untyped, String, String?) -> Hash[String, untyped]
+    def post_consume: (String) -> Hash[String, untyped]
 
     def inspect: () -> String
   end
@@ -212,6 +256,17 @@ module Fingerly
       ?visitor: String?,
       ?level: String?
     ) -> EventPage
+    DEFAULT_MAX_AGE_SECONDS: Integer
+
+    def consume: (String) -> EventConsumption
+    def verify: (
+      String,
+      ?max_age_seconds: Integer,
+      ?tag: String?,
+      ?consume: bool
+    ) -> EventVerification
+    def self.verify_options: (untyped, untyped, untyped) -> void
+    def self.failed_check: (Event, Integer, String?) -> String?
     def self.segment: (untyped) -> String
     def self.escape: (untyped) -> String
     def self.instant: (Time) -> String
