@@ -4,7 +4,7 @@ Server-side event reads, webhook verification and a same-origin proxy for
 Ruby.
 
 ```ruby
-gem "fingerly", "~> 0.1"
+gem "fingerly", "~> 0.3.0"
 ```
 
 ```ruby
@@ -94,7 +94,10 @@ call site can help with.
 ```ruby
 def decide(fingerly, request_id)
   event = fingerly.events.get(request_id)
-  event.scored? && event.suspect_level == "low" ? "allow" : "review"
+  return "review" if event.visitor_id.empty? || !event.scored?
+  return "refuse" if event.triggers.any? { |t| t.signal == Fingerly::EventTrigger::SIGNAL_ATTESTATION_FAILED }
+
+  event.suspect_level == "low" ? "allow" : "review"
 rescue Fingerly::APIError => e
   return "retry later" if e.pending? # not decided yet: read again after e.retry_after
   return "refuse" if e.event_not_found?
@@ -175,7 +178,22 @@ job. `event_not_found?` means a request id that was never issued, or one past
 retention, and is never pending.
 
 The archived document arrives moments after the event itself, so check
-`has_document?` rather than assuming it is there.
+`has_document?` rather than assuming it is there, and read `event.document`
+(`Hash` or `nil`, holding allow-listed `risk`, `attestation`, `ip_network` and
+`velocity` fields without raw signals, user agent or address). When a submission
+is unidentifiable (`identifiable == false`, such as insufficient entropy, a
+genuine embedded WebView, or an unmatched high-risk Web payload),
+`event.visitor_id` is `""`; there are no `deferred_token`, `deferred_signals` or
+`supplements` fields in `v: 3`.
+
+`Fingerly::EventTrigger::V3_SIGNALS` groups the `v: 3` anti-spoofing and
+integrity signal constants on `Fingerly::EventTrigger`:
+`SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`),
+`SIGNAL_DEVICE_INCONSISTENT` (`"device_inconsistent"`),
+`SIGNAL_REPORT_INCOMPLETE` (`"report_incomplete"`),
+`SIGNAL_TAMPERING` (`"tampering"`),
+`SIGNAL_CUSTOM_ROOT_CA` (`"custom_root_ca"`) and
+`SIGNAL_SECONDARY_USER_PROFILE` (`"secondary_user_profile"`).
 
 ## Verify a backend action
 
@@ -275,8 +293,8 @@ Put it first, ahead of authentication: the browser SDK sends no cookies and
 carries no user, and a filter that redirected it to a sign-in page would break
 identification for every signed-out visitor.
 
-Then point the browser SDK at the same path. Both of its calls go there, with
-nothing appended:
+Then point the client SDK at the same path. Browser and proxied native SDKs post
+a single `v: 3` identification envelope there, with nothing appended:
 
 ```ts
 import { load } from '@fingerly/web-js'
@@ -318,18 +336,21 @@ URL.
 
 The caller must present a public key from the same environment as the proxy
 key, or the request gets `401`. Requests without either `Origin` or a validated
-native `X-Fingerly-SDK-Platform` header are rejected locally with `400`
-(`missing_origin`), and `x-fingerly-origin` is never synthesized from `Host` or
-the request URL. Bodies over 1 MiB get `413`, enforced while reading rather than
-after buffering. That bounds what the proxy holds. A server that buffers the
-whole request before calling the application, as Puma does, has already read it
-by then, so bound request bodies there with the server's or the load balancer's
-own limit as well. Falcon streams the body, so there the proxy stops reading at
-the limit. All incoming `x-fingerly-*`, `cookie` and `authorization` headers are
+native `X-Fingerly-SDK-Platform` header (`ios`, `android`, `react-native`,
+`react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`,
+`flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`,
+`kotlin-multiplatform`) are rejected locally with `400` (`missing_origin`), and
+`x-fingerly-origin` is never synthesized from `Host`, `Referer` or the request
+URL. Bodies over 1 MiB get `413`, enforced while reading rather than after
+buffering. That bounds what the proxy holds. A server that buffers the whole
+request before calling the application, as Puma does, has already read it by
+then, so bound request bodies there with the server's or the load balancer's own
+limit as well. Falcon streams the body, so there the proxy stops reading at the
+limit. All incoming `x-fingerly-*`, `cookie` and `authorization` headers are
 stripped, restoring only a validated `x-fingerly-sdk-platform` alongside
-`idempotency-key`, `sec-fetch-*` and `sec-ch-ua-*`. The proxy reports itself
-upstream as `ruby/0.3.0` in `x-fingerly-proxy-version`, which the dashboard
-shows per proxy.
+`x-fingerly-host`, `idempotency-key`, `sec-fetch-*` and `sec-ch-ua-*`. The proxy
+reports itself upstream as `ruby/0.3.0` in `x-fingerly-proxy-version`, which the
+dashboard shows per proxy.
 
 When Fingerly cannot be reached, the visitor gets a gateway error rather than
 your application's `500`: `504 Gateway timeout` when `timeout:` (5 seconds by
