@@ -201,6 +201,7 @@ module Fingerly
     MISSING_ORIGIN_JSON: String
     ALLOWED_PLATFORMS: Regexp
     FORWARDED_CLIENT_HEADERS: Array[String]
+    RELAYABLE_STATUS: Range[Integer]
     BODILESS: Array[Integer]
     RELAYED_HEADERS: Array[String]
 

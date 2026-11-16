@@ -561,6 +561,29 @@ class ProxyHardeningTest < Minitest::Test
     end
   end
 
+  ODD_STATUSES = {
+    "099" => "HTTP/1.1 099 Odd\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+    "101" => "HTTP/1.1 101 Switching Protocols\r\nconnection: close\r\n\r\n",
+    "103" => "HTTP/1.1 103 Early Hints\r\nconnection: close\r\n\r\n",
+    "199" => "HTTP/1.1 199 Odd\r\nconnection: close\r\n\r\n",
+    "600" => "HTTP/1.1 600 Odd\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+    "999" => "HTTP/1.1 999 Odd\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+    "000" => "HTTP/1.1 000 Odd\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+    "304" => "HTTP/1.1 304 Not Modified\r\nconnection: close\r\n\r\n",
+    "399" => "HTTP/1.1 399 Odd\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+  }.freeze
+
+  ODD_STATUSES.each do |code, raw|
+    define_method(:"test_an_upstream_status_#{code}_is_a_502") do
+      RawServer.run(raw) do |server|
+        response = build(server.origin).call(env_for)
+
+        assert_equal 502, response[0], "upstream status #{code} was relayed as #{response[0]}"
+        assert_equal "no-store", response[1]["cache-control"]
+      end
+    end
+  end
+
   def test_every_local_answer_is_no_store # rubocop:disable Metrics/AbcSize
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       cors = build(api.origin, allowed_origins: ["https://app.example"])

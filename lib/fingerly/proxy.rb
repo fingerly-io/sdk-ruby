@@ -117,6 +117,9 @@ module Fingerly
       sec-ch-ua sec-ch-ua-mobile sec-ch-ua-platform
     ].freeze
 
+    # Upstream statuses that can be relayed; 3xx inside this range is not.
+    RELAYABLE_STATUS = (200..599)
+
     # Statuses that must not carry a body.
     BODILESS = [204, 205, 304].freeze
 
@@ -323,9 +326,11 @@ module Fingerly
       # back, so a response cut short upstream is a 502 rather than a truncated
       # success.
       result = @transport.call(Net::HTTP::Post, @ingest, headers, body)
-      # A redirect is never followed, and never handed to the browser either.
-      if (300..399).cover?(result.status)
-        return upstream_failed(env, 502, "Bad gateway", "upstream answered a redirect", cors)
+      # The API answers 2xx, 4xx or 5xx. A redirect is never followed, and
+      # anything outside 200 to 599 is not a status a browser can be handed.
+      unless RELAYABLE_STATUS.cover?(result.status) && !(300..399).cover?(result.status)
+        return upstream_failed(env, 502, "Bad gateway", "upstream answered an unusable status",
+                               cors)
       end
 
       relay(result, cors)
