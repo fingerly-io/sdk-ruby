@@ -140,6 +140,15 @@ class ContractTest < Minitest::Test
     assert schemas.dig("SDKEventOut", "properties").key?("reason")
   end
 
+  def test_v3_signals_include_the_0_3_0_anti_spoofing_signals
+    assert_equal "attestation_downgrade", Fingerly::EventTrigger::SIGNAL_ATTESTATION_DOWNGRADE
+    assert_equal "probe_errors", Fingerly::EventTrigger::SIGNAL_PROBE_ERRORS
+    assert_equal "fetch_metadata_missing", Fingerly::EventTrigger::SIGNAL_FETCH_METADATA_MISSING
+    assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_ATTESTATION_DOWNGRADE
+    assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_PROBE_ERRORS
+    assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_FETCH_METADATA_MISSING
+  end
+
   def test_decodes_unidentifiable_event_and_all_v3_trigger_signals
     payload = JSON.generate(
       "request_id" => "0199a963-e400-7000-8000-000000000099",

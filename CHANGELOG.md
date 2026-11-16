@@ -6,8 +6,9 @@
   `fixtures.json`), removing the retired supplement endpoint and
   `deferred_token`.
 - Added `Fingerly::Event#reason`, v3 `Fingerly::EventTrigger` anti-spoofing
-  signal constants (`attestation_failed`, `device_inconsistent`,
-  `report_incomplete`, `tampering`, `custom_root_ca`,
+  signal constants (`attestation_failed`, `attestation_downgrade`,
+  `device_inconsistent`, `report_incomplete`, `probe_errors`,
+  `fetch_metadata_missing`, `tampering`, `custom_root_ca`,
   `secondary_user_profile`), optional `EventTrigger#group`, and empty
   `visitor_id` (`""`) support for unidentifiable events.
 - Enforced the v3 first-party proxy relay contract: sanitize-and-restore of

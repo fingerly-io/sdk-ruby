@@ -7,8 +7,11 @@ module Fingerly
   class EventTrigger
     SIGNAL_ATTESTATION_FAILED = "attestation_failed"
     SIGNAL_ATTESTATION_MISSING = "attestation_missing"
+    SIGNAL_ATTESTATION_DOWNGRADE = "attestation_downgrade"
     SIGNAL_DEVICE_INCONSISTENT = "device_inconsistent"
     SIGNAL_REPORT_INCOMPLETE = "report_incomplete"
+    SIGNAL_PROBE_ERRORS = "probe_errors"
+    SIGNAL_FETCH_METADATA_MISSING = "fetch_metadata_missing"
     SIGNAL_TAMPERING = "tampering"
     SIGNAL_BROWSER_TAMPERING = "browser_tampering"
     SIGNAL_CUSTOM_ROOT_CA = "custom_root_ca"
@@ -16,8 +19,11 @@ module Fingerly
 
     V3_SIGNALS = [
       SIGNAL_ATTESTATION_FAILED,
+      SIGNAL_ATTESTATION_DOWNGRADE,
       SIGNAL_DEVICE_INCONSISTENT,
       SIGNAL_REPORT_INCOMPLETE,
+      SIGNAL_PROBE_ERRORS,
+      SIGNAL_FETCH_METADATA_MISSING,
       SIGNAL_TAMPERING,
       SIGNAL_CUSTOM_ROOT_CA,
       SIGNAL_SECONDARY_USER_PROFILE
