@@ -128,6 +128,44 @@ class ContractTest < Minitest::Test
     refute_nil delivery.data["request_id"]
   end
 
+  def test_openapi_retires_supplement_and_deferred_token
+    openapi = JSON.parse(File.read(File.join(Fixtures::DIR, "openapi.json")))
+    paths = openapi.fetch("paths")
+    schemas = openapi.dig("components", "schemas")
+
+    assert paths.key?("/api/v1/ingest")
+    refute(paths.keys.any? { |route| route.include?("supplement") })
+    refute schemas.key?("SupplementOut")
+    refute schemas.dig("IdentifyOut", "properties").key?("deferred_token")
+    assert schemas.dig("SDKEventOut", "properties").key?("reason")
+  end
+
+  def test_decodes_unidentifiable_event_and_all_v3_trigger_signals
+    payload = JSON.generate(
+      "request_id" => "0199a963-e400-7000-8000-000000000099",
+      "visitor_id" => "",
+      "occurred_at" => "2026-09-17T12:00:00Z",
+      "state" => "unavailable",
+      "reason" => "enrichment_unavailable",
+      "suspect_score" => 72,
+      "suspect_level" => "high",
+      "triggers" => Fingerly::EventTrigger::V3_SIGNALS.map do |sig|
+        { "signal" => sig, "group" => sig, "weight" => 15, "confidence" => "high" }
+      end,
+      "has_document" => false
+    )
+
+    FakeAPI.run(FakeAPI.json(200, payload)) do |api|
+      event = client(api).events.get("0199a963-e400-7000-8000-000000000099")
+
+      assert_equal "", event.visitor_id
+      assert_equal "unavailable", event.state
+      assert_equal "enrichment_unavailable", event.reason
+      assert_equal Fingerly::EventTrigger::V3_SIGNALS, event.triggers.map(&:signal)
+      assert_equal Fingerly::EventTrigger::V3_SIGNALS, event.triggers.map(&:group)
+    end
+  end
+
   private
 
   def client(api)

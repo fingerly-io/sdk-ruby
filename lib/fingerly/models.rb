@@ -5,8 +5,28 @@ require "time"
 module Fingerly
   # One signal group that contributed to an event's suspect score.
   class EventTrigger
-    # @return [String, nil] the signal group, such as +vpn+ or +bot+
+    SIGNAL_ATTESTATION_FAILED = "attestation_failed"
+    SIGNAL_ATTESTATION_MISSING = "attestation_missing"
+    SIGNAL_DEVICE_INCONSISTENT = "device_inconsistent"
+    SIGNAL_REPORT_INCOMPLETE = "report_incomplete"
+    SIGNAL_TAMPERING = "tampering"
+    SIGNAL_BROWSER_TAMPERING = "browser_tampering"
+    SIGNAL_CUSTOM_ROOT_CA = "custom_root_ca"
+    SIGNAL_SECONDARY_USER_PROFILE = "secondary_user_profile"
+
+    V3_SIGNALS = [
+      SIGNAL_ATTESTATION_FAILED,
+      SIGNAL_DEVICE_INCONSISTENT,
+      SIGNAL_REPORT_INCOMPLETE,
+      SIGNAL_TAMPERING,
+      SIGNAL_CUSTOM_ROOT_CA,
+      SIGNAL_SECONDARY_USER_PROFILE
+    ].freeze
+
+    # @return [String, nil] the signal or signal group, such as +vpn+ or +attestation_failed+
     attr_reader :signal
+    # @return [String, nil] optional group identifier when returned alongside a raw signal
+    attr_reader :group
     # @return [Integer] the group's combined weight in this score
     attr_reader :weight
     # @return [String, nil] +low+, +medium+ or +high+
@@ -15,6 +35,7 @@ module Fingerly
     # @api private
     def initialize(payload)
       @signal = payload["signal"]
+      @group = payload["group"]
       @weight = payload["weight"] || 0
       @confidence = payload["confidence"]
       freeze
@@ -33,11 +54,12 @@ module Fingerly
   # the distinction at the call site.
   class Event
     # Fields copied straight from the response, in the order the API documents
-    # them. Anything not listed stays reachable through {#raw}. +project_id+
-    # is the UUID string of the Fingerly project the event belongs to, and nil
-    # when an older server does not send it.
+    # them. Anything not listed stays reachable through {#raw}. +visitor_id+ is
+    # +""+ when the submission was unidentifiable, +reason+ explains why
+    # enrichment did not happen when unavailable, and +project_id+ is the UUID
+    # string of the Fingerly project the event belongs to (nil on older servers).
     STRING_FIELDS = %w[
-      request_id project_id visitor_id state environment platform sdk_platform
+      request_id project_id visitor_id state reason environment platform sdk_platform
       sdk_version origin url_host url_path tag ip_network country_code
       country_name asn asn_name anonymity_network agent agent_version os
       device_kind visitor_kind suspect_level

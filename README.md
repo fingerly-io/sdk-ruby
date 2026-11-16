@@ -306,26 +306,29 @@ and its absence is a `ConfigurationError` at start-up.
 ### What the proxy does
 
 It answers only the configured path, matched exactly and case-sensitively:
-`/k7x2qm4a/`, `//k7x2qm4a`, `/k7x2qm4a/.`, `/k7x2qm4a%2F` and `/k7x2qm4a/admin`
-are not its own. Anything else is passed along to
-your application, or answered `404` when the proxy has no application behind
-it. On its own path, anything but `POST` gets `405`. Every request it accepts
-goes to one URL, `https://api.fingerly.io/api/v1/ingest`, which tells the
-identification from the report that follows it by the body. Nothing else is
-reachable through it, event reads included: they need a secret key and stay
-unreachable from a browser by construction. `api_version:` changes only the
-version in that URL.
+`/k7x2qm4a/`, `//k7x2qm4a`, `/k7x2qm4a/.`, `/k7x2qm4a%2F`, `/k7x2qm4a/admin`
+and retired `/supplement` paths are not its own. Anything else is passed along
+to your application, or answered `404` when the proxy has no application behind
+it. On its own path, anything but `POST` (plus `OPTIONS` when `allowed_origins:`
+is configured) gets `405`. Every request it accepts goes verbatim as raw bytes
+to one URL, `https://api.fingerly.io/api/v1/ingest`. Nothing else is reachable
+through it, event reads included: they need a secret key and stay unreachable
+from a browser by construction. `api_version:` changes only the version in that
+URL.
 
-The browser must present a public key from the same environment as the proxy
-key, or the request gets `401`. Bodies over 1 MiB get `413`,
-enforced while reading rather than after buffering. That bounds what the proxy
-holds. A server that buffers the whole request before calling the application,
-as Puma does, has already read it by then, so bound request bodies there with
-the server's or the load balancer's own limit as well. Falcon streams the body,
-so there the proxy stops reading at the limit. Only the content type, the
-visitor metadata Fingerly needs, and an `Idempotency-Key` are forwarded;
-customer cookies and authorization headers never are. The proxy reports itself
-upstream as `ruby/0.2.0` in `x-fingerly-proxy-version`, which the dashboard
+The caller must present a public key from the same environment as the proxy
+key, or the request gets `401`. Requests without either `Origin` or a validated
+native `X-Fingerly-SDK-Platform` header are rejected locally with `400`
+(`missing_origin`), and `x-fingerly-origin` is never synthesized from `Host` or
+the request URL. Bodies over 1 MiB get `413`, enforced while reading rather than
+after buffering. That bounds what the proxy holds. A server that buffers the
+whole request before calling the application, as Puma does, has already read it
+by then, so bound request bodies there with the server's or the load balancer's
+own limit as well. Falcon streams the body, so there the proxy stops reading at
+the limit. All incoming `x-fingerly-*`, `cookie` and `authorization` headers are
+stripped, restoring only a validated `x-fingerly-sdk-platform` alongside
+`idempotency-key`, `sec-fetch-*` and `sec-ch-ua-*`. The proxy reports itself
+upstream as `ruby/0.3.0` in `x-fingerly-proxy-version`, which the dashboard
 shows per proxy.
 
 When Fingerly cannot be reached, the visitor gets a gateway error rather than

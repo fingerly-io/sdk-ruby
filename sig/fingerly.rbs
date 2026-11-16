@@ -39,7 +39,18 @@ module Fingerly
   end
 
   class EventTrigger
+    SIGNAL_ATTESTATION_FAILED: String
+    SIGNAL_ATTESTATION_MISSING: String
+    SIGNAL_DEVICE_INCONSISTENT: String
+    SIGNAL_REPORT_INCOMPLETE: String
+    SIGNAL_TAMPERING: String
+    SIGNAL_BROWSER_TAMPERING: String
+    SIGNAL_CUSTOM_ROOT_CA: String
+    SIGNAL_SECONDARY_USER_PROFILE: String
+    V3_SIGNALS: Array[String]
+
     attr_reader signal: String?
+    attr_reader group: String?
     attr_reader weight: Integer
     attr_reader confidence: String?
 
@@ -53,6 +64,7 @@ module Fingerly
     attr_reader project_id: String?
     attr_reader visitor_id: String?
     attr_reader state: String?
+    attr_reader reason: String?
     attr_reader environment: String?
     attr_reader platform: String?
     attr_reader sdk_platform: String?
@@ -185,6 +197,10 @@ module Fingerly
     DEFAULT_TIMEOUT: Integer
     USER_AGENT: String
     PROXY_VERSION: String
+    NO_CLIENT_IP: String
+    MISSING_ORIGIN_JSON: String
+    ALLOWED_PLATFORMS: Regexp
+    FORWARDED_CLIENT_HEADERS: Array[String]
     BODILESS: Array[Integer]
     RELAYED_HEADERS: Array[String]
 
@@ -198,6 +214,7 @@ module Fingerly
       ?proxy_key: String?,
       ?secret_key: String?,
       ?path: String?,
+      ?allowed_origins: Array[String]?,
       ?api_version: String,
       ?upstream: String?,
       ?max_body_bytes: Integer,

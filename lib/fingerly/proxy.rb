@@ -52,7 +52,7 @@ module Fingerly
           if key.start_with?("HTTP_") then key[5..].downcase.tr("_", "-")
           elsif %w[CONTENT_TYPE CONTENT_LENGTH].include?(key) then key.downcase.tr("_", "-")
           end
-        headers[name] = value if name
+        headers[name] = headers.key?(name) ? "#{headers[name]}, #{value}" : value if name
       end
       headers.freeze
     end
@@ -99,6 +99,23 @@ module Fingerly
 
     # The answer when client_ip returns anything but one IP address.
     NO_CLIENT_IP = "The client IP callback returned no valid address"
+
+    # JSON refusal when both Origin and a validated native SDK platform are absent.
+    MISSING_ORIGIN_JSON =
+      "{\"error\":{\"code\":\"missing_origin\",\"message\":\"Missing origin\",\"status\":400}}"
+
+    # Exact lowercase native/bridge identifiers allowed in x-fingerly-sdk-platform.
+    ALLOWED_PLATFORMS = Regexp.new(
+      "\\A(ios|android|react-native|react-native-ios|react-native-android|" \
+      "flutter|flutter-ios|flutter-android|lynx-ios|lynx-android|" \
+      "capacitor|kotlin-multiplatform)\\z"
+    ).freeze
+
+    # Allowlisted client headers forwarded verbatim when present and header-safe.
+    FORWARDED_CLIENT_HEADERS = %w[
+      idempotency-key sec-fetch-site sec-fetch-mode sec-fetch-dest
+      sec-ch-ua sec-ch-ua-mobile sec-ch-ua-platform
+    ].freeze
 
     # Statuses that must not carry a body.
     BODILESS = [204, 205, 304].freeze
@@ -151,7 +168,7 @@ module Fingerly
     #   invalid, or if the proxy is middleware without a path. A proxy is wired
     #   up once at start-up, where an error is natural to handle.
     def initialize(app = nil, client_ip:, proxy_key: nil, secret_key: nil,
-                   path: nil, api_version: "v1", upstream: nil,
+                   path: nil, allowed_origins: nil, api_version: "v1", upstream: nil,
                    max_body_bytes: DEFAULT_MAX_BODY_BYTES, timeout: DEFAULT_TIMEOUT,
                    configure_http: nil, logger: nil)
       raise ConfigurationError, "A Fingerly proxy key is required" if !proxy_key && !secret_key
@@ -178,6 +195,7 @@ module Fingerly
       @key = proxy_key || secret_key
       @scope = Config.parse_key(@key, @uses_proxy_key ? Config::PROXY : Config::SECRET)
       @path = path.nil? ? nil : Config.normalize_path(path)
+      @allowed_origins = normalize_origins(allowed_origins)
       @api_version = Config.normalize_api_version(api_version)
       @ingest = "/api/#{@api_version}/ingest".freeze
       @max_body_bytes = Config.positive_int(max_body_bytes, "max_body_bytes")
@@ -230,24 +248,35 @@ module Fingerly
     # behind the middleware: an +Errno::ENOENT+ or an +IOError+ raised by the
     # host application is that application's error, not a visitor hanging up.
     def serve(env, request)
-      return refuse(405, "Method Not Allowed", "allow" => "POST") unless
-        request.request_method.casecmp("POST").zero?
+      sdk_platform = validated_platform(request.header("x-fingerly-sdk-platform"))
+      origin = non_blank(safe(request.header("origin")))
+      cors = cors_headers(origin)
+
+      if !@allowed_origins.empty? && request.request_method.casecmp("OPTIONS").zero?
+        return preflight(origin, cors)
+      end
+
+      unless request.request_method.casecmp("POST").zero?
+        allow = @allowed_origins.empty? ? "POST" : "POST, OPTIONS"
+        return refuse(405, "Method Not Allowed", cors.merge("allow" => allow))
+      end
 
       api_key = upstream_key_for(request.header("x-api-key"))
-      return refuse(401, "Unauthorized") if api_key.nil?
+      return refuse(401, "Unauthorized", cors) if api_key.nil?
+      return json_refuse(400, MISSING_ORIGIN_JSON, cors) if origin.nil? && sdk_platform.nil?
 
       # Refuse on the declared size first; the read below enforces the real one.
       declared = request.header("content-length").to_i
-      return refuse(413, "Payload Too Large") if declared > @max_body_bytes
+      return refuse(413, "Payload Too Large", cors) if declared > @max_body_bytes
 
       body = read_bounded(env["rack.input"])
-      return refuse(413, "Payload Too Large") if body.nil?
+      return refuse(413, "Payload Too Large", cors) if body.nil?
 
-      forward(env, request, api_key, body)
+      forward(env, request, api_key, body, origin: origin, sdk_platform: sdk_platform, cors: cors)
     rescue IOError, SystemCallError
       # The visitor went away while the body was arriving. Nobody is left to
       # read an answer, and there is nothing worth logging.
-      refuse(400, "Bad request")
+      refuse(400, "Bad request", cors || {})
     end
 
     def redacted_fields
@@ -278,23 +307,23 @@ module Fingerly
       refuse(404, "Not Found")
     end
 
-    def forward(env, request, api_key, body)
+    def forward(env, request, api_key, body, origin:, sdk_platform:, cors:)
       address = client_address(env, request)
-      return refuse(500, NO_CLIENT_IP) if address.nil?
+      return refuse(500, NO_CLIENT_IP, cors) if address.nil?
 
-      headers = upstream_headers(request, api_key, address)
+      headers = upstream_headers(request, api_key, address, origin, sdk_platform)
 
-      # Both of the browser SDK's calls go to the one ingest URL, which tells
-      # them apart by their bodies. The whole answer is read, within its cap,
-      # before anything is written back, so a response cut short upstream is
-      # a 502 rather than a truncated success.
+      # Client SDK envelopes go to the one ingest URL verbatim as raw bytes.
+      # The whole answer is read, within its cap, before anything is written
+      # back, so a response cut short upstream is a 502 rather than a truncated
+      # success.
       result = @transport.call(Net::HTTP::Post, @ingest, headers, body)
-      relay(result)
+      relay(result, cors)
     rescue TimeoutError => e
-      upstream_failed(env, 504, "Gateway timeout", e)
+      upstream_failed(env, 504, "Gateway timeout", e, cors)
     rescue Error => e
       # Refused, reset, unresolvable, malformed, truncated, or over the cap.
-      upstream_failed(env, 502, "Bad gateway", e)
+      upstream_failed(env, 502, "Bad gateway", e, cors)
     end
 
     # What the callback returned, when it is exactly one IP address.
@@ -329,9 +358,9 @@ module Fingerly
     # Answers a failed upstream call and logs one line about it: no stack
     # trace, nothing from the request, and nothing in the response that names
     # Fingerly.
-    def upstream_failed(env, status, message, error)
+    def upstream_failed(env, status, message, error, cors = {})
       log(env, "fingerly proxy: #{status} #{error.message}")
-      refuse(status, message)
+      refuse(status, message, cors)
     end
 
     def log(env, line)
@@ -360,25 +389,31 @@ module Fingerly
 
     # Builds the headers for the forwarded request.
     #
-    # Nothing is copied wholesale: only the body's content type, the visitor
-    # metadata Fingerly needs, and an idempotency key when the SDK sent one.
-    # The visitor writes the origin, user agent and content type, so each is
-    # checked before it is repeated into a header of ours.
+    # Nothing is copied wholesale: all incoming +x-fingerly-*+, +cookie+ and
+    # +authorization+ headers are stripped, only a validated
+    # +x-fingerly-sdk-platform+ is restored, and +x-fingerly-origin+ is sent
+    # only when incoming +origin+ is non-empty (never synthesized from +host+
+    # or the request URL).
     #
     # @return [Hash]
-    def upstream_headers(request, api_key, address)
+    def upstream_headers(request, api_key, address, origin, sdk_platform)
       headers = {
-        "content-type" => safe(request.header("content-type")) || "application/json",
+        "content-type" => non_blank(safe(request.header("content-type"))) || "application/json",
         "x-api-key" => api_key,
         "x-fingerly-client-ip" => address,
-        "x-fingerly-origin" => safe(request.header("origin")).to_s,
         "x-fingerly-user-agent" => safe(request.header("user-agent")).to_s,
         "x-fingerly-proxy-version" => PROXY_VERSION,
         "user-agent" => USER_AGENT
       }
+      headers["x-fingerly-origin"] = origin if origin
+      headers["x-fingerly-sdk-platform"] = sdk_platform if sdk_platform
+      host = non_blank(safe(request.header("host")))
+      headers["x-fingerly-host"] = host if host
       headers["x-fingerly-proxy-key"] = @key if @uses_proxy_key
-      idempotency = safe(request.header("idempotency-key"))
-      headers["idempotency-key"] = idempotency if idempotency && !idempotency.empty?
+      FORWARDED_CLIENT_HEADERS.each do |name|
+        value = non_blank(safe(request.header(name)))
+        headers[name] = value if value
+      end
       headers
     end
 
@@ -387,22 +422,62 @@ module Fingerly
       Config.header_safe?(value) ? value : nil
     end
 
+    def non_blank(value)
+      value && !value.strip.empty? ? value : nil
+    end
+
+    def validated_platform(value)
+      value if Config.header_safe?(value) && ALLOWED_PLATFORMS.match?(value)
+    end
+
+    def normalize_origins(origins)
+      Array(origins).filter_map do |origin|
+        candidate = origin.to_s.strip
+        candidate if !candidate.empty? && Config.header_safe?(candidate)
+      end.uniq.freeze
+    end
+
+    def cors_headers(origin)
+      return {} unless origin && @allowed_origins.include?(origin)
+
+      {
+        "access-control-allow-origin" => origin,
+        "vary" => "Origin",
+        "access-control-allow-methods" => "POST, OPTIONS",
+        "access-control-allow-headers" =>
+          "content-type, x-api-key, idempotency-key, x-fingerly-sdk-platform",
+        "access-control-expose-headers" =>
+          "x-request-id, ratelimit-limit, ratelimit-remaining, retry-after"
+      }
+    end
+
+    def preflight(origin, cors)
+      return refuse(403, "Forbidden") if origin && cors.empty?
+
+      headers = { "cache-control" => "no-store", "allow" => "POST, OPTIONS" }.merge(cors)
+      [204, headers, []]
+    end
+
     # Returns the upstream response, uncacheable and with only the allowlisted
     # headers.
     #
     # Header names are lowercase and repeats joined with ", ", which is the
     # one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name
     # outright, and Rack 2 refuses the array Rack 3 would rather have.
-    def relay(result)
-      headers = { "cache-control" => "no-store" }
+    def relay(result, cors = {})
+      headers = { "cache-control" => "no-store" }.merge(cors)
       result.headers.each do |name, values|
         key = name.downcase
-        headers[key] = Array(values).join(", ") if RELAYED_HEADERS.include?(key)
+        next unless RELAYED_HEADERS.include?(key)
+
+        filtered = Array(values).select { |v| Config.header_safe?(v) && !v.match?(/fingerly/i) }
+        headers[key] = filtered.join(", ") unless filtered.empty?
       end
 
-      # No chunk at all, not one empty chunk: some servers warn on, or count,
-      # an empty string in the body of a status that must not have one.
-      return [result.status, headers, []] if BODILESS.include?(result.status)
+      if BODILESS.include?(result.status)
+        headers.delete("content-type")
+        return [result.status, headers, []]
+      end
 
       [result.status, headers, [result.body]]
     end
@@ -425,6 +500,12 @@ module Fingerly
     def refuse(status, message, extra = {})
       headers = { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }
       [status, headers.merge(extra), [message]]
+    end
+
+    # A JSON refusal that never reached Fingerly.
+    def json_refuse(status, body, extra = {})
+      headers = { "content-type" => "application/json", "cache-control" => "no-store" }
+      [status, headers.merge(extra), [body]]
     end
   end
 end
