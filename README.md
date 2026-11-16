@@ -308,7 +308,10 @@ already moved the path into `SCRIPT_NAME`. A mount matches a prefix, but the
 proxy still answers only the mount's exact path: `/k7x2qm4a/admin` or
 `/k7x2qm4a/` routed to it get `404`. Rails hands a mount the same `PATH_INFO`
 with and without a trailing slash, so the proxy tells them apart by the raw
-request line in `REQUEST_URI`, which Puma and Falcon provide.
+request line in `REQUEST_URI`, which Puma and Falcon provide. On a server that
+does not set `REQUEST_URI`, the proxy answers a mount only when `PATH_INFO` is
+empty, and a mount that folds repeated slashes, as `Rack::URLMap` does, still
+answers `//k7x2qm4a`. Passing `path:` is the mode that is exact on every server.
 
 ```ruby
 # config/routes.rb
@@ -328,7 +331,8 @@ It answers only the configured path, matched exactly and case-sensitively:
 and retired `/supplement` paths are not its own. Anything else is passed along
 to your application, or answered `404` when the proxy has no application behind
 it. On its own path, anything but `POST` (plus `OPTIONS` when `allowed_origins:`
-is configured) gets `405`. Every request it accepts goes verbatim as raw bytes
+is configured) gets `405`. Methods are compared exactly, so `post` gets `405`
+too. Every answer the proxy writes itself carries `cache-control: no-store`. Every request it accepts goes verbatim as raw bytes
 to one URL, `https://api.fingerly.io/api/v1/ingest`. Nothing else is reachable
 through it, event reads included: they need a secret key and stay unreachable
 from a browser by construction. `api_version:` changes only the version in that

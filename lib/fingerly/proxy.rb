@@ -260,11 +260,12 @@ module Fingerly
       origin = non_blank(safe(request.header("origin")))
       cors = cors_headers(origin)
 
-      if !@allowed_origins.empty? && request.request_method.casecmp("OPTIONS").zero?
+      # Methods are case-sensitive in HTTP: +post+ is not +POST+.
+      if !@allowed_origins.empty? && request.request_method == "OPTIONS"
         return preflight(origin, cors)
       end
 
-      unless request.request_method.casecmp("POST").zero?
+      unless request.request_method == "POST"
         allow = @allowed_origins.empty? ? "POST" : "POST, OPTIONS"
         return refuse(405, "Method Not Allowed", cors.merge("allow" => allow))
       end
@@ -298,12 +299,15 @@ module Fingerly
     # SCRIPT_NAME, so +/k7x2qm4a/admin+ arrives with PATH_INFO +/admin+. Rails
     # also hands the mount PATH_INFO +/+ for both +/k7x2qm4a+ and
     # +/k7x2qm4a/+, so where the server reports the raw request line in
-    # REQUEST_URI, as Puma and Falcon do, that is compared too.
+    # REQUEST_URI, as Puma and Falcon do, that is compared too. Without
+    # REQUEST_URI only an empty PATH_INFO is exact, because +/+ is also what
+    # +/k7x2qm4a/+ and +//k7x2qm4a+ arrive as.
     def mounted_exactly?(env)
-      return false unless ["", "/"].include?(env["PATH_INFO"].to_s)
+      path_info = env["PATH_INFO"].to_s
+      return false unless ["", "/"].include?(path_info)
 
       raw = env["REQUEST_URI"]
-      return true unless raw.is_a?(String) && !raw.empty?
+      return path_info.empty? unless raw.is_a?(String) && !raw.empty?
 
       raw = raw.sub(%r{\A[a-z][a-z0-9+.-]*://[^/]*}i, "") # an absolute-form target
       raw.split("?", 2).first == env["SCRIPT_NAME"].to_s

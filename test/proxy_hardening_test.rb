@@ -398,6 +398,23 @@ class ProxyHardeningTest < Minitest::Test
     end
   end
 
+  def test_only_post_is_accepted_and_the_method_is_case_sensitive
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      proxy = build(api.origin)
+      %w[GET HEAD PUT PATCH DELETE OPTIONS TRACE CONNECT post Post pOST].each do |verb|
+        env = env_for
+        env["REQUEST_METHOD"] = verb
+        response = proxy.call(env)
+
+        assert_equal 405, response[0], verb
+        assert_equal "POST", response[1]["allow"], verb
+        assert_equal "no-store", response[1]["cache-control"], verb
+      end
+
+      assert_empty api.requests
+    end
+  end
+
   def test_the_api_version_cannot_carry_a_path
     ["v1/../x", "../", "v1/", "v1?x=1", "v1#x", "V1", "v0", "v01", "v1\n", "v1\n/x", "x\nv1", "",
      " v1", "v1 ", "v1%2f..", nil, 1, :v1].each do |version|
@@ -413,6 +430,41 @@ class ProxyHardeningTest < Minitest::Test
      "https://", "https:///x", "javascript:alert(1)", "https://127.0.0.1\n.evil.example",
      "x\nhttps://127.0.0.1", "https://127.0.0.1 x"].each do |upstream|
       assert_raises(Fingerly::ConfigurationError, upstream.inspect) { build(upstream) }
+    end
+  end
+
+  def test_a_mount_without_a_path_answers_only_the_exact_mount
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      mapped = Rack::URLMap.new(PATH => build(api.origin, path: nil))
+      # Rack::MockRequest sets no REQUEST_URI, like servers that do not report
+      # it. Rack::URLMap itself folds a doubled leading slash (//k7x2qm4a) into
+      # the mount before the proxy sees it, which only the configured path:
+      # mode can refuse; see the test below.
+      answered = ["#{PATH}/", "#{PATH}//", "#{PATH}/x", "#{PATH}/."].reject do |path|
+        env = env_for
+        env["PATH_INFO"] = path
+        mapped.call(env)[0] == 404
+      end
+
+      assert_empty answered, "answered without REQUEST_URI"
+      exact = env_for
+      exact["PATH_INFO"] = PATH
+
+      assert_equal 200, mapped.call(exact)[0]
+    end
+  end
+
+  def test_the_configured_path_is_exact_whatever_the_server_reports
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      proxy = build(api.origin)
+      answered = ["/#{PATH}", "#{PATH}/", "#{PATH}//", "#{PATH}/x"].reject do |path|
+        env = env_for
+        env["PATH_INFO"] = path
+        proxy.call(env)[0] == 404
+      end
+
+      assert_empty answered
+      assert_empty api.requests
     end
   end
 
