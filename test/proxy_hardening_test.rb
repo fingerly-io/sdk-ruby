@@ -461,24 +461,23 @@ class ProxyHardeningTest < Minitest::Test
     end
   end
 
-  def test_a_mount_without_a_path_answers_only_the_exact_mount
+  def test_there_is_no_path_less_mode
+    assert_raises(Fingerly::ConfigurationError) { build("http://127.0.0.1:9", path: nil) }
+  end
+
+  # Rack::URLMap moves the mount into SCRIPT_NAME, so a proxy mounted there
+  # sees an empty PATH_INFO, never its own path, and answers nothing.
+  def test_a_proxy_mounted_by_url_map_answers_nothing
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      mapped = Rack::URLMap.new(PATH => build(api.origin, path: nil))
-      # Rack::MockRequest sets no REQUEST_URI, like servers that do not report
-      # it. Rack::URLMap itself folds a doubled leading slash (//k7x2qm4a) into
-      # the mount before the proxy sees it, which only the configured path:
-      # mode can refuse; see the test below.
-      answered = ["#{PATH}/", "#{PATH}//", "#{PATH}/x", "#{PATH}/."].reject do |path|
+      mapped = Rack::URLMap.new(PATH => build(api.origin))
+      answered = ["", "/", "//", "/x"].reject do |rest|
         env = env_for
-        env["PATH_INFO"] = path
+        env["PATH_INFO"] = "#{PATH}#{rest}"
         mapped.call(env)[0] == 404
       end
 
-      assert_empty answered, "answered without REQUEST_URI"
-      exact = env_for
-      exact["PATH_INFO"] = PATH
-
-      assert_equal 200, mapped.call(exact)[0]
+      assert_empty answered
+      assert_empty api.requests
     end
   end
 
@@ -843,9 +842,6 @@ class ProxyHardeningTest < Minitest::Test
       assert_equal 200, status
       assert_equal ["#{PATH}/x", "payload"], seen
       assert_empty api.requests
-    end
-    assert_raises(Fingerly::ConfigurationError) do
-      build("http://127.0.0.1:9", app: ->(_e) { [200, {}, []] }, path: nil)
     end
   end
 end

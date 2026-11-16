@@ -307,27 +307,11 @@ import { load } from '@fingerly/web-js'
 const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
 
-`path` is optional where the framework already routes the path to the proxy,
-as a Rails `mount` or a `Rack::URLMap` entry does. Omit it there: the mount has
-already moved the path into `SCRIPT_NAME`. A mount matches a prefix, but the
-proxy still answers only the mount's exact path: `/k7x2qm4a/admin` or
-`/k7x2qm4a/` routed to it get `404`. Rails hands a mount the same `PATH_INFO`
-with and without a trailing slash, so the proxy tells them apart by the raw
-request line in `REQUEST_URI`, which Puma and Falcon provide. On a server that
-does not set `REQUEST_URI`, the proxy answers a mount only when `PATH_INFO` is
-empty, and a mount that folds repeated slashes, as `Rack::URLMap` does, still
-answers `//k7x2qm4a`. Passing `path:` is the mode that is exact on every server.
-
-```ruby
-# config/routes.rb
-mount Fingerly::Proxy.new(
-  proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
-  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
-) => "/k7x2qm4a"
-```
-
-As middleware it sees every request in the stack, so there `path` is required
-and its absence is a `ConfigurationError` at start-up.
+`path` is required, and its absence is a `ConfigurationError` at start-up. The
+proxy matches it exactly against `PATH_INFO`, so use it as middleware, as
+above, or run it as the whole application. Do not put it behind a Rails
+`mount` or a `Rack::URLMap` entry: those move the path into `SCRIPT_NAME`, and
+the proxy then sees a path that is not its own and answers `404`.
 
 ### What the proxy does
 

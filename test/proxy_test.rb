@@ -122,13 +122,14 @@ class ProxyTest < Minitest::Test
     assert_equal 1, calls
   end
 
-  # Middleware sees every request in the stack, so without a path it would
-  # take the application's own routes from it.
-  def test_refuses_to_be_middleware_without_a_path
-    assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Proxy.new(
-        ->(_env) { [200, {}, []] }, proxy_key: PROXY_KEY, client_ip: ->(_r) { "203.0.113.7" }
-      )
+  # The path is what the proxy matches exactly, as middleware or on its own.
+  def test_refuses_to_start_without_a_path
+    [->(_env) { [200, {}, []] }, nil].each do |app|
+      error = assert_raises(Fingerly::ConfigurationError) do
+        Fingerly::Proxy.new(app, proxy_key: PROXY_KEY, client_ip: ->(_r) { "203.0.113.7" })
+      end
+
+      assert_equal "path is required", error.message
     end
   end
 
@@ -169,14 +170,6 @@ class ProxyTest < Minitest::Test
 
     ROUTES.each do |path, handled|
       assert_equal handled, proxy.handles?(path), path
-    end
-  end
-
-  def test_recognises_every_path_without_one_configured
-    proxy = build("http://127.0.0.1:9", path: nil)
-
-    [PATH, "/other", "/", ""].each do |path|
-      assert proxy.handles?(path), "refused #{path.inspect}"
     end
   end
 
@@ -664,54 +657,6 @@ class ProxyTest < Minitest::Test
     response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post("/orders", input: "{}")
 
     assert_equal 404, response.status
-  end
-
-  # Rack::URLMap, like a Rails mount, routes the path here and moves it into
-  # SCRIPT_NAME, so the proxy takes no path of its own.
-  def test_answers_where_a_mount_routes_it_without_a_path
-    FakeAPI.run(FakeAPI.json(200, "{\"visitor_id\":\"v1\"}")) do |api|
-      mapped = Rack::URLMap.new(PATH => build(api.origin, path: nil))
-      response = Rack::MockRequest.new(Rack::Lint.new(mapped)).post(
-        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
-      )
-
-      assert_equal 200, response.status
-      assert_equal "/api/v1/ingest", api.requests.first.path
-    end
-  end
-
-  # A mount matches a prefix; the proxy still answers only the exact path.
-  # Rails hands the mount PATH_INFO "/" for the path with or without a
-  # trailing slash, so the raw request line decides.
-  MOUNTED = {
-    [PATH, "", PATH] => true,                # Rack::URLMap, exact
-    [PATH, "/", PATH] => true,               # Rails mount, exact
-    [PATH, "/", "#{PATH}?x=1"] => true,      # a query is not part of the path
-    ["/shop#{PATH}", "", "/shop#{PATH}"] => true, # a sub-URI deployment
-    [PATH, "/", "http://shop.example#{PATH}"] => true, # absolute-form target
-    [PATH, "/", "#{PATH}/"] => false, # trailing slash
-    [PATH, "/", "#{PATH}//"] => false,
-    [PATH, "/admin", "#{PATH}/admin"] => false,
-    [PATH, "/supplement", "#{PATH}/supplement"] => false,
-    [PATH, "/.", "#{PATH}/."] => false,
-    [PATH, "/;x", "#{PATH};x"] => false,
-    [PATH, "/%2F", "#{PATH}%2F"] => false
-  }.freeze
-
-  def test_a_mount_answers_only_its_exact_path
-    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      proxy = build(api.origin, path: nil)
-      MOUNTED.each do |(script_name, path_info, request_uri), answered|
-        env = Rack::MockRequest.env_for(request_uri, method: "POST", input: "{}",
-                                                     "HTTP_X_API_KEY" => PUBLIC_KEY,
-                                                     "HTTP_ORIGIN" => "https://shop.example")
-        env.merge!("SCRIPT_NAME" => script_name, "PATH_INFO" => path_info,
-                   "REQUEST_URI" => request_uri)
-        status, = proxy.call(env)
-
-        assert_equal answered ? 200 : 404, status, request_uri
-      end
-    end
   end
 
   # A sub-URI deployment is a detail the configured path knows nothing

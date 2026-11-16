@@ -136,16 +136,14 @@ module Fingerly
 
     # @return [Integer] the request body limit in bytes
     attr_reader :max_body_bytes
-    # @return [String, nil] the one path answered, without a trailing slash, or
-    #   nil to answer whatever the framework routes here
+    # @return [String] the one path answered, without a trailing slash
     attr_reader :path
     # @return [String] the API route version forwarded upstream
     attr_reader :api_version
 
     # @param app [#call, nil] the rest of the Rack stack. Rack passes this
-    #   when the proxy is used as middleware, which then needs +path+ to know
-    #   which request is its own; without one, a path the proxy does not serve
-    #   gets 404.
+    #   when the proxy is used as middleware; without one, a path the proxy
+    #   does not serve gets 404.
     # @param client_ip [#call] resolves the visitor's address from a
     #   {ProxyRequest}. Read it from a header your own infrastructure sets,
     #   such as your load balancer's or CDN's. Never use the left-most
@@ -155,10 +153,8 @@ module Fingerly
     # @param secret_key [String, nil] the deprecated alternative to
     #   +proxy_key+. Secret read keys will be refused in the next major
     #   version; do not pass both.
-    # @param path [String, nil] the path the dashboard issued for this proxy,
-    #   such as +/k7x2qm4a+, matched exactly. Omit it only where the framework
-    #   already routes that path here, as a Rails +mount+ or a +Rack::URLMap+
-    #   entry does; the proxy then answers whatever it is handed.
+    # @param path [String] the path the dashboard issued for this proxy, such
+    #   as +/k7x2qm4a+, matched exactly against +PATH_INFO+. Required.
     # @param api_version [String] the version of the upstream ingest URL
     # @param upstream [String, nil] overrides the API origin implied by the key:
     #   a bare origin, scheme, host and optional port, and +https+ only
@@ -172,8 +168,8 @@ module Fingerly
     #   Without one, +rack.logger+ is used when the server provides it, and
     #   standard error otherwise.
     # @raise [ConfigurationError] if a credential, path, limit or callback is
-    #   invalid, or if the proxy is middleware without a path. A proxy is wired
-    #   up once at start-up, where an error is natural to handle.
+    #   missing or invalid. A proxy is wired up once at start-up, where an error is
+    #   natural to handle.
     def initialize(app = nil, client_ip:, proxy_key: nil, secret_key: nil,
                    path: nil, allowed_origins: nil, api_version: "v1", upstream: nil,
                    max_body_bytes: DEFAULT_MAX_BODY_BYTES, timeout: DEFAULT_TIMEOUT,
@@ -183,9 +179,7 @@ module Fingerly
         raise ConfigurationError, "Pass proxy_key or deprecated secret_key, not both"
       end
       raise ConfigurationError, "client_ip is required" unless client_ip.respond_to?(:call)
-      # Middleware sees every request in the stack. Without a path it would
-      # take all of them from the application behind it.
-      raise ConfigurationError, "path is required when the proxy is middleware" if app && !path
+      raise ConfigurationError, "path is required" if path.nil?
 
       if logger && !logger.respond_to?(:warn)
         raise ConfigurationError, "logger must respond to warn"
@@ -201,7 +195,7 @@ module Fingerly
       @uses_proxy_key = !proxy_key.nil?
       @key = proxy_key || secret_key
       @scope = Config.parse_key(@key, @uses_proxy_key ? Config::PROXY : Config::SECRET)
-      @path = path.nil? ? nil : Config.normalize_path(path)
+      @path = Config.normalize_path(path)
       @allowed_origins = normalize_origins(allowed_origins)
       @api_version = Config.normalize_api_version(api_version)
       @ingest = "/api/#{@api_version}/ingest".freeze
@@ -223,14 +217,12 @@ module Fingerly
     # application it passed the request along to would receive nothing.
     #
     # The match is exact and case-sensitive: no trailing or doubled slash, no
-    # dot segment, no encoded slash, nothing under the path. Without a
-    # configured +path+ the framework routed the request here, and {#call}
-    # checks that the mount was hit exactly.
+    # dot segment, no encoded slash, nothing under the path.
     #
     # @param path [String] the request path
     # @return [Boolean]
     def handles?(path)
-      @path.nil? || path.to_s == @path
+      path.to_s == @path
     end
 
     # Serves one Rack request.
@@ -243,7 +235,7 @@ module Fingerly
       # about, so the application-relative path is the one that means the
       # same thing wherever the application is deployed.
       path = env["PATH_INFO"].to_s
-      return pass(env) unless @path ? handles?(path) : mounted_exactly?(env)
+      return pass(env) unless handles?(path)
 
       serve(env, ProxyRequest.new(env, path))
     end
@@ -291,26 +283,6 @@ module Fingerly
     def redacted_fields
       [["path", @path.inspect], ["api_version", @api_version],
        [@uses_proxy_key ? "proxy_key" : "secret_key", Redacted::MARK]]
-    end
-
-    # Whether a mount routed exactly its own path here.
-    #
-    # A Rails +mount+ or +Rack::URLMap+ matches a prefix and moves it into
-    # SCRIPT_NAME, so +/k7x2qm4a/admin+ arrives with PATH_INFO +/admin+. Rails
-    # also hands the mount PATH_INFO +/+ for both +/k7x2qm4a+ and
-    # +/k7x2qm4a/+, so where the server reports the raw request line in
-    # REQUEST_URI, as Puma and Falcon do, that is compared too. Without
-    # REQUEST_URI only an empty PATH_INFO is exact, because +/+ is also what
-    # +/k7x2qm4a/+ and +//k7x2qm4a+ arrive as.
-    def mounted_exactly?(env)
-      path_info = env["PATH_INFO"].to_s
-      return false unless ["", "/"].include?(path_info)
-
-      raw = env["REQUEST_URI"]
-      return path_info.empty? unless raw.is_a?(String) && !raw.empty?
-
-      raw = raw.sub(%r{\A[a-z][a-z0-9+.-]*://[^/]*}i, "") # an absolute-form target
-      raw.split("?", 2).first == env["SCRIPT_NAME"].to_s
     end
 
     def pass(env)

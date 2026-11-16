@@ -207,15 +207,15 @@ module Fingerly
     RELAYED_HEADERS: Array[String]
 
     attr_reader max_body_bytes: Integer
-    attr_reader path: String?
+    attr_reader path: String
     attr_reader api_version: String
 
     def initialize: (
       ?untyped app,
       client_ip: ^(ProxyRequest) -> String?,
+      path: String,
       ?proxy_key: String?,
       ?secret_key: String?,
-      ?path: String?,
       ?allowed_origins: Array[String]?,
       ?api_version: String,
       ?upstream: String?,
