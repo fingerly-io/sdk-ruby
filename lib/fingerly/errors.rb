@@ -83,6 +83,74 @@ module Fingerly
     end
   end
 
+  # Raised for any non-2xx answer to a DeviceCheck read or write.
+  #
+  # It is an {APIError}, so +rescue Fingerly::APIError+ still catches it; each
+  # documented code has its own predicate.
+  #
+  #   begin
+  #     bits = fingerly.device_check.query(request_id)
+  #   rescue Fingerly::DeviceCheckError => e
+  #     raise unless e.not_held? || e.spent? || e.apple_rejected?
+  #
+  #     bits = nil # no answer, not a verdict: decide without the bits
+  #   end
+  class DeviceCheckError < APIError
+    NOT_HELD = "device_check_not_held"
+    SPENT = "device_check_spent"
+    BUSY = "device_check_busy"
+    CREDENTIAL_UNAVAILABLE = "credential_unavailable"
+    BITS_REQUIRED = "bits_required"
+    APPLE_REJECTED = "apple_rejected"
+    UNAVAILABLE = "device_check_unavailable"
+
+    # @return [Integer, nil] Apple's HTTP status for +apple_rejected+, from
+    #   the +apple_status+ entry of {#details}; nil for any other code
+    attr_reader :apple_status
+
+    # @api private
+    def initialize(**)
+      super
+      @apple_status = parse_apple_status
+    end
+
+    # +404+: no token is held for that event. Decide without the bits.
+    def not_held? = status == 404 && code == NOT_HELD
+
+    # +409+: the token was already used, or this was a retry that is not the
+    # request the token was first used for.
+    def spent? = status == 409 && code == SPENT
+
+    # +409+: another call is using the token right now.
+    def busy? = status == 409 && code == BUSY
+
+    # +409+: the project's Apple key is missing, refused, or has DeviceCheck
+    # off. The token is kept: fix the key, then retry the same request.
+    def credential_unavailable? = status == 409 && code == CREDENTIAL_UNAVAILABLE
+
+    # +422+: a write named neither bit.
+    def bits_required? = status == 422 && code == BITS_REQUIRED
+
+    # +422+: Apple rejected the token, which is now used up. See
+    # {#apple_status}.
+    def apple_rejected? = status == 422 && code == APPLE_REJECTED
+
+    # +503+: Apple or Fingerly's storage could not answer, after the retries
+    # the client already made. The token is kept: retry the same request
+    # within the hour.
+    def unavailable? = status == 503 && code == UNAVAILABLE
+
+    private
+
+    def parse_apple_status
+      return nil unless code == APPLE_REJECTED && details.is_a?(Array)
+
+      entry = details.find { |item| item.is_a?(Hash) && item["field"] == "apple_status" }
+      issue = entry && entry["issue"]
+      issue.is_a?(String) && issue.match?(/\A\d{3}\z/) ? Integer(issue, 10) : nil
+    end
+  end
+
   # Raised when a request does not finish within its time limit.
   #
   # The deadline covers reading the response body, not only the headers.

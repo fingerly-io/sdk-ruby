@@ -130,7 +130,9 @@ A read answers `404` with one of two codes, each with its own predicate:
 - `event_not_found?`: `event_not_found`, the request id was never issued, or
   the event is past retention.
 
-The client never retries by itself. A deadline raises
+The client never retries an event read by itself; only a
+[DeviceCheck](#devicecheck-bits) call retries, and only the same request. A
+deadline raises
 `Fingerly::TimeoutError`; an unreachable API raises
 `Fingerly::ConnectionError`.
 
@@ -214,6 +216,83 @@ visitor identifiers supplied by the browser. Tags correlate events; they do
 not replace your application's authentication or replay protection. A tag must
 never hold a personal identifier, such as a user ID, email, install ID or
 advertising ID, because the server keeps tags in long-lived rollups.
+
+## DeviceCheck bits
+
+On iOS, Apple keeps two DeviceCheck bits per device for your developer team,
+and they survive a reinstall. When DeviceCheck is on for the project's Apple
+key, Fingerly holds the DeviceCheck token that came with an identification for
+one hour, and your backend spends it once:
+
+```ruby
+bits = fingerly.device_check.query(request_id)    # Fingerly::DeviceCheckBits
+bits.found      # false when Apple holds no bits for the device yet
+bits.bit0       # true or false
+bits.last_update # "YYYY-MM", or nil when Apple holds no bits
+
+written = fingerly.device_check.write(request_id, bit0: true) # Fingerly::DeviceCheckWrite
+written.bit0    # true; a bit left out is nil, and keeps its value at Apple
+```
+
+Apple treats each DeviceCheck token as single-use, so one event pays for one
+call: a read or a write, never both. A flow that checks and then marks a
+device, such as a once-per-device free trial, takes two identifications:
+
+1. Query on the identification that asks for the trial. If the bits say the
+   device already had one, refuse it.
+2. Otherwise grant the trial and record the grant in your own data.
+3. Write the bit on the next identification from that install, such as one
+   the app makes right after the grant. Until the write lands, your own record
+   of the grant is what stops a second trial.
+
+```ruby
+# bit0 means "this device has had a free trial". The meaning is yours.
+def start_trial(fingerly, account, request_id)
+  bits = begin
+    fingerly.device_check.query(request_id)
+  rescue Fingerly::DeviceCheckError => e
+    raise unless e.not_held? || e.spent? || e.apple_rejected?
+
+    nil # no answer, not a verdict: decide without the bits
+  end
+  return "offer-paid-plan" if bits&.bit0
+
+  Trial.grant(account, device_marked: false)
+  "granted"
+end
+
+def mark_trial(fingerly, account, request_id)
+  fingerly.device_check.write(request_id, bit0: true)
+  Trial.update(account, device_marked: true)
+rescue Fingerly::DeviceCheckError => e
+  raise unless e.not_held? || e.spent?
+  # Keep device_marked false and write at the install's next identification.
+end
+```
+
+A failure raises `Fingerly::DeviceCheckError`, a `Fingerly::APIError` with a
+predicate per code:
+
+| Status | Code | Predicate |
+|---|---|---|
+| 404 | `device_check_not_held` | `not_held?` |
+| 409 | `device_check_spent` | `spent?` |
+| 409 | `device_check_busy` | `busy?` |
+| 409 | `credential_unavailable` | `credential_unavailable?` |
+| 422 | `bits_required` | `bits_required?` |
+| 422 | `apple_rejected` | `apple_rejected?`, with Apple's HTTP status in `apple_status` |
+| 503 | `device_check_unavailable` | `unavailable?` |
+
+A write that names neither bit raises `Fingerly::ConfigurationError` before
+anything is sent.
+
+The token may be retried only with the same request. After a `503` or a
+transport failure the token is kept, so the client sends the identical request
+again, up to three attempts in all; it retries nothing else. If you retry
+later yourself, repeat the same call with the same bits: a read after a failed
+write, or a write with other bits, answers `409 device_check_spent`. Apple asks
+that DeviceCheck is never the only fraud check, and that users have a way to
+have the bits reset.
 
 ## Webhooks
 

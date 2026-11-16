@@ -32,6 +32,26 @@ module Fingerly
     def pending?: () -> bool
   end
 
+  class DeviceCheckError < APIError
+    NOT_HELD: String
+    SPENT: String
+    BUSY: String
+    CREDENTIAL_UNAVAILABLE: String
+    BITS_REQUIRED: String
+    APPLE_REJECTED: String
+    UNAVAILABLE: String
+
+    attr_reader apple_status: Integer?
+
+    def not_held?: () -> bool
+    def spent?: () -> bool
+    def busy?: () -> bool
+    def credential_unavailable?: () -> bool
+    def bits_required?: () -> bool
+    def apple_rejected?: () -> bool
+    def unavailable?: () -> bool
+  end
+
   class TimeoutError < Error
   end
 
@@ -113,6 +133,25 @@ module Fingerly
             | () -> Enumerator[Event, Array[Event]]
   end
 
+  class DeviceCheckBits
+    attr_reader found: bool
+    attr_reader bit0: bool
+    attr_reader bit1: bool
+    attr_reader last_update: String?
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+    def found?: () -> bool
+  end
+
+  class DeviceCheckWrite
+    attr_reader bit0: bool?
+    attr_reader bit1: bool?
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
   class WebhookEvent
     attr_reader id: String?
     attr_reader type: String?
@@ -132,7 +171,12 @@ module Fingerly
     USER_AGENT: String
     MAX_ERROR_BODY: Integer
 
+    DEVICE_CHECK_ATTEMPTS: Integer
+    DEVICE_CHECK_BACKOFF: Array[Float]
+    DEVICE_CHECK_MAX_WAIT: Integer
+
     attr_reader events: Events
+    attr_reader device_check: DeviceCheck
 
     def initialize: (
       secret_key: String,
@@ -144,6 +188,15 @@ module Fingerly
     ) -> void
     def close: () -> void
     def get: (String) -> Hash[String, untyped]
+    def spend_device_check: (untyped, String, String?) -> Hash[String, untyped]
+
+    def inspect: () -> String
+  end
+
+  class DeviceCheck
+    def initialize: (Client) -> void
+    def query: (String) -> DeviceCheckBits
+    def write: (String, ?bit0: bool?, ?bit1: bool?) -> DeviceCheckWrite
 
     def inspect: () -> String
   end
@@ -159,6 +212,7 @@ module Fingerly
       ?visitor: String?,
       ?level: String?
     ) -> EventPage
+    def self.segment: (untyped) -> String
     def self.escape: (untyped) -> String
     def self.instant: (Time) -> String
 

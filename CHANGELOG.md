@@ -18,6 +18,11 @@
   `sec-ch-ua-*`, and optional `allowed_origins:` CORS preflight handling.
 - `Fingerly::Proxy` requires `proxy_key:` and checks the caller's public key
   on every request; a secret key is never sent upstream.
+- Added `fingerly.device_check.query(request_id)` and
+  `fingerly.device_check.write(request_id, bit0:, bit1:)`, which spend an iOS
+  event's held DeviceCheck token once, raise `Fingerly::DeviceCheckError`
+  with a predicate per code and `apple_status`, and retry a `503` or a
+  transport failure with the same request only.
 
 ## 0.2.0
 

@@ -26,6 +26,10 @@ module Fingerly
     # @return [Events] event reads under this client's secret key
     attr_reader :events
 
+    # @return [DeviceCheck] the DeviceCheck bits of iOS events, read or
+    #   written once per event
+    attr_reader :device_check
+
     # @param secret_key [String] a server-only key,
     #   +fly_sk_{environment}_…+, whose prefix names the environment read
     # @param endpoint [String, nil] overrides the Fingerly API origin: a bare
@@ -58,6 +62,7 @@ module Fingerly
         configure_http: configure_http
       )
       @events = Events.new(self)
+      @device_check = DeviceCheck.new(self)
       freeze
     end
 
@@ -88,7 +93,77 @@ module Fingerly
       decode(result.body)
     end
 
+    # Performs one authenticated DeviceCheck spend and returns the decoded
+    # body.
+    #
+    # A held DeviceCheck token may be retried only with the same request, so a
+    # +503+ or a transport failure is retried with exactly these bytes, at
+    # most {DEVICE_CHECK_ATTEMPTS} times in all. Nothing else is retried.
+    #
+    # @param method [Class] +Net::HTTP::Post+ or +Net::HTTP::Put+
+    # @param body [String, nil] the JSON body, or nil for none
+    # @api private
+    def spend_device_check(method, path, body)
+      headers = {
+        "x-api-key" => @secret_key,
+        "accept" => "application/json",
+        "user-agent" => USER_AGENT
+      }
+      if body
+        headers["content-type"] = "application/json"
+      else
+        # No body at all, stated, so nothing in between waits for one.
+        headers["content-length"] = "0"
+      end
+      headers.freeze
+
+      result = with_device_check_retries do
+        @transport.call(method, @base_path + path, headers, body)
+      end
+      raise device_check_error(result) unless (200..299).cover?(result.status)
+
+      decode(result.body)
+    end
+
+    # Attempts in all for one DeviceCheck spend, the first included.
+    DEVICE_CHECK_ATTEMPTS = 3
+
+    # Seconds to wait before each retry, when the answer named no
+    # +Retry-After+.
+    DEVICE_CHECK_BACKOFF = [0.25, 0.5].freeze
+
+    # The longest +Retry-After+ honoured between attempts.
+    DEVICE_CHECK_MAX_WAIT = 2
+
     private
+
+    def with_device_check_retries
+      attempt = 0
+      loop do
+        attempt += 1
+        last = attempt >= DEVICE_CHECK_ATTEMPTS
+        begin
+          result = yield
+        rescue TimeoutError, ConnectionError
+          raise if last
+
+          sleep DEVICE_CHECK_BACKOFF[attempt - 1]
+          next
+        end
+        return result unless result.status == 503 && !last
+
+        wait = retry_after(header(result, "retry-after"))
+        sleep(wait ? [wait, DEVICE_CHECK_MAX_WAIT].min : DEVICE_CHECK_BACKOFF[attempt - 1])
+      end
+    end
+
+    def device_check_error(result)
+      error = api_error(result)
+      DeviceCheckError.new(
+        status: error.status, code: error.code, details: error.details,
+        request_id: error.request_id, retry_after: error.retry_after
+      )
+    end
 
     def redacted_fields
       [["endpoint", @origin + @base_path], ["secret_key", Redacted::MARK]]
@@ -191,14 +266,7 @@ module Fingerly
     #   past retention.
     # @raise [TimeoutError] if the request exceeds the client timeout
     def get(request_id)
-      # URL parsers resolve a dot segment even when it is percent-encoded, so
-      # escaping cannot keep these in the path: "." and the empty id would name
-      # the list route, and ".." a route above it, secret key attached.
-      if ["", ".", ".."].include?(request_id.to_s)
-        raise ConfigurationError, "request_id is not a Fingerly request id"
-      end
-
-      Event.new(@client.get("/events/#{Events.escape(request_id)}"))
+      Event.new(@client.get("/events/#{Events.segment(request_id)}"))
     end
 
     # Lists events within the retention window, newest first.
@@ -228,6 +296,21 @@ module Fingerly
       EventPage.new(@client.get("/events#{suffix}"))
     end
 
+    # A request id as one escaped path segment.
+    #
+    # @raise [ConfigurationError] for an id no escaping can keep in its segment
+    # @api private
+    def self.segment(request_id)
+      # URL parsers resolve a dot segment even when it is percent-encoded, so
+      # escaping cannot keep these in the path: "." and the empty id would name
+      # the list route, and ".." a route above it, secret key attached.
+      if ["", ".", ".."].include?(request_id.to_s)
+        raise ConfigurationError, "request_id is not a Fingerly request id"
+      end
+
+      escape(request_id)
+    end
+
     # Percent-encodes a request id into exactly one path segment.
     #
     # Only RFC 3986 unreserved characters survive, so a slash cannot escape the
@@ -252,6 +335,81 @@ module Fingerly
     end
 
     private
+
+    def redacted_fields
+      []
+    end
+  end
+
+  # Reads or writes Apple's two DeviceCheck bits for the device behind an iOS
+  # event. Reached as +fingerly.device_check+.
+  #
+  # Fingerly holds the DeviceCheck token that came with an identification for
+  # one hour, and spends it once: a read or a write, never both. Apple treats
+  # each token as single-use, so a flow that reads and then marks a device,
+  # such as a once-per-device free trial, reads on one identification and
+  # writes on the next.
+  #
+  # A +503+ (+device_check_unavailable+) or a transport failure is retried
+  # with the same request; Apple lets a token be retried only that way, and
+  # the API answers +409 device_check_spent+ to a retry that differs.
+  #
+  #   bits = fingerly.device_check.query(request_id)
+  #   fingerly.device_check.write(next_request_id, bit0: true) unless bits.bit0
+  class DeviceCheck
+    include Redacted
+
+    # @api private
+    def initialize(client)
+      @client = client
+      freeze
+    end
+
+    # Spends the event's held token to read the device's two bits.
+    #
+    # @param request_id [String] the +request_id+ of an iOS identification
+    #   made within the last hour
+    # @return [DeviceCheckBits]
+    # @raise [DeviceCheckError] on any non-2xx response; its predicates name
+    #   the documented codes
+    # @raise [TimeoutError, ConnectionError] when every attempt failed to get
+    #   an answer
+    def query(request_id)
+      DeviceCheckBits.new(
+        @client.spend_device_check(Net::HTTP::Post, "#{path(request_id)}/query", nil)
+      )
+    end
+
+    # Spends the event's held token to set +bit0+, +bit1+ or both. A bit left
+    # nil keeps its value.
+    #
+    # @param request_id [String] the +request_id+ of an iOS identification
+    #   made within the last hour
+    # @param bit0 [Boolean, nil] the value for the first bit
+    # @param bit1 [Boolean, nil] the value for the second bit
+    # @return [DeviceCheckWrite] the bits Apple accepted
+    # @raise [ConfigurationError] when neither bit is given, or a bit is not
+    #   true, false or nil; nothing is sent
+    # @raise [DeviceCheckError] on any non-2xx response
+    # @raise [TimeoutError, ConnectionError] when every attempt failed to get
+    #   an answer
+    def write(request_id, bit0: nil, bit1: nil)
+      bits = { "bit0" => bit0, "bit1" => bit1 }.compact
+      raise ConfigurationError, "name bit0, bit1 or both" if bits.empty?
+      unless bits.values.all? { |value| [true, false].include?(value) }
+        raise ConfigurationError, "bit0 and bit1 must be true, false or nil"
+      end
+
+      DeviceCheckWrite.new(
+        @client.spend_device_check(Net::HTTP::Put, path(request_id), JSON.generate(bits))
+      )
+    end
+
+    private
+
+    def path(request_id)
+      "/events/#{Events.segment(request_id)}/device-check"
+    end
 
     def redacted_fields
       []

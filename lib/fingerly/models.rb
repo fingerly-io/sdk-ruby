@@ -153,6 +153,64 @@ module Fingerly
     end
   end
 
+  # What Apple holds for the device behind an event, from
+  # +fingerly.device_check.query+. The bits mean what you decide; Fingerly
+  # never reads them.
+  class DeviceCheckBits
+    # @return [Boolean] false when Apple holds no bits for the device yet;
+    #   both bits are then false
+    attr_reader :found
+    # @return [Boolean] the first bit
+    attr_reader :bit0
+    # @return [Boolean] the second bit
+    attr_reader :bit1
+    # @return [String, nil] when the bits last changed, as +YYYY-MM+; nil when
+    #   Apple holds no bits
+    attr_reader :last_update
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    def initialize(payload)
+      @found = payload["found"] == true
+      @bit0 = payload["bit0"] == true
+      @bit1 = payload["bit1"] == true
+      @last_update = payload["last_update"].is_a?(String) ? payload["last_update"] : nil
+      @raw = payload
+      freeze
+    end
+
+    def found? = found
+
+    def inspect
+      "#<Fingerly::DeviceCheckBits found=#{found} bit0=#{bit0} bit1=#{bit1}>"
+    end
+  end
+
+  # The bits Apple accepted, from +fingerly.device_check.write+.
+  class DeviceCheckWrite
+    # @return [Boolean, nil] the value set for the first bit; nil when the
+    #   write left it out
+    attr_reader :bit0
+    # @return [Boolean, nil] the value set for the second bit; nil when the
+    #   write left it out
+    attr_reader :bit1
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    def initialize(payload)
+      @bit0 = [true, false].include?(payload["bit0"]) ? payload["bit0"] : nil
+      @bit1 = [true, false].include?(payload["bit1"]) ? payload["bit1"] : nil
+      @raw = payload
+      freeze
+    end
+
+    def inspect
+      "#<Fingerly::DeviceCheckWrite bit0=#{bit0.inspect} bit1=#{bit1.inspect}>"
+    end
+  end
+
   # The envelope every webhook delivery shares.
   #
   # {#data} is left as a plain Hash, so a new event type needs no SDK upgrade.
