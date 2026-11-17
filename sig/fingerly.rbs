@@ -74,6 +74,197 @@ module Fingerly
   class ConnectionError < Error
   end
 
+  module Signal
+    HIGH_ACTIVITY: String
+    TAMPERING: String
+    DEVICE_FARM: String
+    DEVELOPER_TOOLS: String
+    GEO_MISMATCH: String
+    DEVICE_INCONSISTENT: String
+    TOR: String
+    PROXY: String
+    RESIDENTIAL_PROXY: String
+    RESIDENTIAL_PROXY_LOW_CONFIDENCE: String
+    RESIDENTIAL_PROXY_MEDIUM_CONFIDENCE: String
+    RESIDENTIAL_PROXY_HIGH_CONFIDENCE: String
+    VPN_PUBLIC: String
+    VPN_TIMEZONE: String
+    VPN_RELAY: String
+    VPN_MOBILE: String
+    VPN_OS_MISMATCH: String
+    VPN_LOW_CONFIDENCE: String
+    VPN_MEDIUM_CONFIDENCE: String
+    VPN_HIGH_CONFIDENCE: String
+    IP_BLOCKLIST_EMAIL_SPAM: String
+    IP_BLOCKLIST_ATTACK_SOURCE: String
+    IP_ABUSER: String
+    DATACENTER_IP: String
+    BOGON_IP: String
+    ANYCAST_IP: String
+    INCOGNITO: String
+    BAD_BOT: String
+    AUTOMATION: String
+    FETCH_METADATA_MISSING: String
+    WEB_TICKET_MISSING: String
+    WEB_TICKET_INVALID: String
+    ANTIDETECT_BROWSER: String
+    VIRTUAL_MACHINE: String
+    FINGERPRINT_SUPPRESSED: String
+    PRIVACY_SETTINGS: String
+    EMBEDDED_WEB_VIEW: String
+    REMOTE_CONTROL: String
+    EMULATOR: String
+    ROOT_APPS: String
+    APP_CLONER: String
+    JAILBREAK: String
+    SIMULATOR: String
+    FRIDA: String
+    MITM_ATTACK: String
+    ACTIVE_CALL: String
+    ATTESTATION_MISSING: String
+    ATTESTATION_DOWNGRADE: String
+    REPEATED_REINSTALL: String
+    DEVICE_ACTIVITY_HIGH: String
+    DEVICE_ACTIVITY_VERY_HIGH: String
+    PLAY_DEVICE_INTEGRITY_FAILED: String
+    PLAY_APP_UNRECOGNIZED: String
+    ATTESTATION_FAILED: String
+    REPORT_INCOMPLETE: String
+    PROBE_ERRORS: String
+    CUSTOM_ROOT_CA: String
+    SECONDARY_USER_PROFILE: String
+    DATACENTER_PROXY: String
+    VPN: String
+    IP_BLOCKLIST: String
+    IP_REPUTATION: String
+    NETWORK_ANOMALY: String
+    LOCATION_SPOOFING: String
+    IOS_SIMULATOR: String
+    ANDROID_EMULATOR: String
+    JAILBROKEN_DEVICE: String
+    ROOTED_DEVICE: String
+    CLONED_APP: String
+    FRIDA_DETECTED: String
+    BROWSER_TAMPERING: String
+    BOT: String
+    INCOGNITO_MODE: String
+    ALL: Array[String]
+  end
+
+  module SuspectLevel
+    LOW: String
+    MEDIUM: String
+    HIGH: String
+    ALL: Array[String]
+  end
+
+  module Confidence
+    LOW: String
+    MEDIUM: String
+    HIGH: String
+    ALL: Array[String]
+  end
+
+  module AttestationState
+    ATTESTED: String
+    NOT_ATTESTED: String
+    FAILED: String
+    ALL: Array[String]
+  end
+
+  module AttestationStatus
+    VERIFIED: String
+    INDETERMINATE: String
+    INVALID: String
+    ABSENT: String
+    UNCONFIGURED: String
+    ALL: Array[String]
+  end
+
+  module AttestSkippedReason
+    NOT_OFFERED: String
+    UNSUPPORTED: String
+    CHALLENGE_UNAVAILABLE: String
+    KEY_ERROR: String
+    TIMEOUT: String
+    BACKOFF: String
+    INSTALL_UNAVAILABLE: String
+    ALL: Array[String]
+  end
+
+  module VerifyReason
+    OK: String
+    NOT_FOUND: String
+    TOO_OLD: String
+    TAG_MISMATCH: String
+    UNIDENTIFIABLE: String
+    UNSCORED: String
+    ALREADY_CONSUMED: String
+    ALL: Array[String]
+  end
+
+  module WebhookEventType
+    IDENTIFICATION_COMPLETED: String
+    IDENTIFICATION_REFUSED: String
+    VISITOR_SUSPECT: String
+    BILLING_STATUS_CHANGED: String
+    USAGE_DAILY_SETTLED: String
+    WEBHOOK_TEST: String
+    ALL: Array[String]
+  end
+
+  module WebhookEnvironment
+    LIVE: String
+    TEST: String
+    ALL: Array[String]
+  end
+
+  module EventState
+    PENDING: String
+    ENRICHED: String
+    UNAVAILABLE: String
+    ALL: Array[String]
+  end
+
+  module Environment
+    PRODUCTION: String
+    STAGING: String
+    DEVELOPMENT: String
+    ALL: Array[String]
+  end
+
+  module Platform
+    WEB: String
+    ANDROID: String
+    IOS: String
+    ALL: Array[String]
+  end
+
+  module AnonymityNetwork
+    TOR: String
+    RELAY: String
+    VPN: String
+    PROXY: String
+    HOSTING: String
+    ALL: Array[String]
+  end
+
+  module DeviceKind
+    DESKTOP: String
+    MOBILE: String
+    TABLET: String
+    SERVER: String
+    ALL: Array[String]
+  end
+
+  module VisitorKind
+    HUMAN: String
+    AI_BOT: String
+    AUTOMATION: String
+    SEARCH_CRAWLER: String
+    ALL: Array[String]
+  end
+
   class EventTrigger
     SIGNAL_ATTESTATION_FAILED: String
     SIGNAL_ATTESTATION_MISSING: String
