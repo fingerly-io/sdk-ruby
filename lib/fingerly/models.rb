@@ -12,6 +12,8 @@ module Fingerly
     SIGNAL_REPORT_INCOMPLETE = "report_incomplete"
     SIGNAL_PROBE_ERRORS = "probe_errors"
     SIGNAL_FETCH_METADATA_MISSING = "fetch_metadata_missing"
+    SIGNAL_WEB_TICKET_MISSING = "web_ticket_missing"
+    SIGNAL_WEB_TICKET_INVALID = "web_ticket_invalid"
     SIGNAL_TAMPERING = "tampering"
     SIGNAL_BROWSER_TAMPERING = "browser_tampering"
     SIGNAL_CUSTOM_ROOT_CA = "custom_root_ca"
@@ -24,6 +26,8 @@ module Fingerly
       SIGNAL_REPORT_INCOMPLETE,
       SIGNAL_PROBE_ERRORS,
       SIGNAL_FETCH_METADATA_MISSING,
+      SIGNAL_WEB_TICKET_MISSING,
+      SIGNAL_WEB_TICKET_INVALID,
       SIGNAL_TAMPERING,
       SIGNAL_CUSTOM_ROOT_CA,
       SIGNAL_SECONDARY_USER_PROFILE

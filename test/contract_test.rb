@@ -147,6 +147,10 @@ class ContractTest < Minitest::Test
     assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_ATTESTATION_DOWNGRADE
     assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_PROBE_ERRORS
     assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_FETCH_METADATA_MISSING
+    assert_equal "web_ticket_missing", Fingerly::EventTrigger::SIGNAL_WEB_TICKET_MISSING
+    assert_equal "web_ticket_invalid", Fingerly::EventTrigger::SIGNAL_WEB_TICKET_INVALID
+    assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_WEB_TICKET_MISSING
+    assert_includes Fingerly::EventTrigger::V3_SIGNALS, Fingerly::EventTrigger::SIGNAL_WEB_TICKET_INVALID
   end
 
   def test_decodes_unidentifiable_event_and_all_v3_trigger_signals

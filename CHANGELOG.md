@@ -8,8 +8,8 @@
 - Added `Fingerly::Event#reason`, v3 `Fingerly::EventTrigger` anti-spoofing
   signal constants (`attestation_failed`, `attestation_downgrade`,
   `device_inconsistent`, `report_incomplete`, `probe_errors`,
-  `fetch_metadata_missing`, `tampering`, `custom_root_ca`,
-  `secondary_user_profile`), optional `EventTrigger#group`, and empty
+  `fetch_metadata_missing`, `web_ticket_missing`, `web_ticket_invalid`,
+  `tampering`, `custom_root_ca`, `secondary_user_profile`), optional `EventTrigger#group`, and empty
   `visitor_id` (`""`) support for unidentifiable events.
 - Enforced the v3 first-party proxy relay contract: sanitize-and-restore of
   validated `x-fingerly-sdk-platform`, `400 missing_origin` when both `Origin`
