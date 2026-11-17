@@ -48,7 +48,7 @@ device behind each session and scores how suspicious it is.
 
    request_id = ARGV.fetch(0) # the requestId the browser SDK's identify() returned
    event = fingerly.events.get(request_id)
-   page = fingerly.events.list(level: "high", limit: 50)
+   page = fingerly.events.list(level: Fingerly::SuspectLevel::HIGH, limit: 50)
    page.each { |row| puts "#{row.request_id} #{row.suspect_level}" }
    ```
 
@@ -160,19 +160,37 @@ genuine embedded WebView, or an unmatched high-risk Web payload),
 `event.visitor_id` is `""`; there are no `deferred_token`, `deferred_signals` or
 `supplements` fields in `v: 3`.
 
-`Fingerly::EventTrigger::V3_SIGNALS` groups the `v: 3` anti-spoofing and
-integrity signal constants on `Fingerly::EventTrigger`:
-`SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`),
-`SIGNAL_ATTESTATION_DOWNGRADE` (`"attestation_downgrade"`),
-`SIGNAL_DEVICE_INCONSISTENT` (`"device_inconsistent"`),
-`SIGNAL_REPORT_INCOMPLETE` (`"report_incomplete"`),
-`SIGNAL_PROBE_ERRORS` (`"probe_errors"`),
-`SIGNAL_FETCH_METADATA_MISSING` (`"fetch_metadata_missing"`),
-`SIGNAL_WEB_TICKET_MISSING` (`"web_ticket_missing"`),
-`SIGNAL_WEB_TICKET_INVALID` (`"web_ticket_invalid"`),
-`SIGNAL_TAMPERING` (`"tampering"`),
-`SIGNAL_CUSTOM_ROOT_CA` (`"custom_root_ca"`) and
-`SIGNAL_SECONDARY_USER_PROFILE` (`"secondary_user_profile"`).
+Compare fields against the named constants rather than raw strings. Each is
+the frozen wire string itself, so `event.suspect_level ==
+Fingerly::SuspectLevel::HIGH` is an ordinary string comparison, and every field
+stays a `String`: a value the server adds later arrives unchanged, and is only
+missing from the module's frozen `ALL` array.
+
+| Module | Field | Values |
+| --- | --- | --- |
+| `Fingerly::Signal` | `EventTrigger#signal`, `#group` | every signal group and detector, such as `VPN`, `VPN_PUBLIC` and `FINGERPRINT_SUPPRESSED` |
+| `Fingerly::SuspectLevel` | `Event#suspect_level`, webhook `data["level"]` | `LOW`, `MEDIUM`, `HIGH` |
+| `Fingerly::Confidence` | `EventTrigger#confidence` | `LOW`, `MEDIUM`, `HIGH` |
+| `Fingerly::EventState` | `Event#state` | `ENRICHED`, `UNAVAILABLE`, and `PENDING`, which a read raises as `pending?` |
+| `Fingerly::Environment` | `Event#environment` | `PRODUCTION`, `STAGING`, `DEVELOPMENT` |
+| `Fingerly::Platform` | `Event#platform` | `WEB`, `ANDROID`, `IOS` |
+| `Fingerly::AnonymityNetwork` | `Event#anonymity_network` | `TOR`, `RELAY`, `VPN`, `PROXY`, `HOSTING` |
+| `Fingerly::DeviceKind` | `Event#device_kind` | `DESKTOP`, `MOBILE`, `TABLET`, `SERVER` |
+| `Fingerly::VisitorKind` | `Event#visitor_kind` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER` |
+| `Fingerly::AttestationState` | `event.document["attestation"]["state"]` | `ATTESTED`, `NOT_ATTESTED`, `FAILED` |
+| `Fingerly::AttestationStatus` | `event.document["attestation"]["status"]` | `VERIFIED`, `INDETERMINATE`, `INVALID`, `ABSENT`, `UNCONFIGURED` |
+| `Fingerly::AttestSkippedReason` | `event.document["attestation"]["attest_skipped"]` | `NOT_OFFERED`, `UNSUPPORTED`, `CHALLENGE_UNAVAILABLE`, `KEY_ERROR`, `TIMEOUT`, `BACKOFF`, `INSTALL_UNAVAILABLE` |
+| `Fingerly::VerifyReason` | `EventVerification#reason` | `OK` (`""`) and the failures in [Verify a backend action](#verify-a-backend-action) |
+| `Fingerly::WebhookEventType` | `WebhookEvent#type` | see [Verify webhooks](#verify-webhooks) |
+| `Fingerly::WebhookEnvironment` | `WebhookEvent#environment` | `LIVE`, `TEST` |
+
+A constant's name is its value upper-cased, with `.` as `_` (`VerifyReason::OK` is `""`). Event reads report
+each trigger under its signal group (`Fingerly::Signal::VPN`), while
+`visitor.suspect` webhooks and the archived document's `risk.triggers` carry
+the detector (`Fingerly::Signal::VPN_PUBLIC`) with its group beside it. Inside
+`module Fingerly`, `Signal` names `Fingerly::Signal`; write `::Signal` for
+Ruby's own. The `SIGNAL_*` constants on `Fingerly::EventTrigger` and its
+`V3_SIGNALS` list are the same strings.
 
 ### Verify a backend action
 
@@ -186,7 +204,7 @@ def authorize_checkout(fingerly, request_id)
   return "refuse" unless result.ok? # result.reason names the failed check
 
   # The score policy is yours: verify never judges the score.
-  result.event.suspect_level == "low" ? "allow" : "review"
+  result.event.suspect_level == Fingerly::SuspectLevel::LOW ? "allow" : "review"
 rescue Fingerly::APIError => e
   return "retry later" if e.pending? # not decided yet: read again after e.retry_after
 
@@ -196,7 +214,7 @@ end
 
 The checks run in this order and stop at the first failure, whose wire string
 is `result.reason` (`""` when `result.ok?`), with a constant on
-`Fingerly::EventVerification`:
+`Fingerly::VerifyReason` (also on `Fingerly::EventVerification`):
 
 1. `not_found` (`NOT_FOUND`): the request id was never issued, or the event is
    past retention. `result.event` is `nil` for this reason only.
@@ -240,9 +258,9 @@ call site can help with.
 def decide(fingerly, request_id)
   event = fingerly.events.get(request_id)
   return "review" if event.visitor_id.empty? || !event.scored?
-  return "refuse" if event.triggers.any? { |t| t.signal == Fingerly::EventTrigger::SIGNAL_ATTESTATION_FAILED }
+  return "refuse" if event.triggers.any? { |t| t.signal == Fingerly::Signal::ATTESTATION_FAILED }
 
-  event.suspect_level == "low" ? "allow" : "review"
+  event.suspect_level == Fingerly::SuspectLevel::LOW ? "allow" : "review"
 rescue Fingerly::APIError => e
   return "retry later" if e.pending? # not decided yet: read again after e.retry_after
   return "refuse" if e.event_not_found?
@@ -373,7 +391,22 @@ reconstructed from parsed parameters is not.
 | Deduplication | persist processed `id` values to deduplicate deliveries |
 
 `WebhookEvent#data` stays a plain `Hash`, so a new event type needs no gem
-upgrade. `identification.completed` and `visitor.suspect` deliveries carry the
+upgrade. Dispatch on `event.type` with `Fingerly::WebhookEventType`:
+
+```ruby
+case event.type
+when Fingerly::WebhookEventType::VISITOR_SUSPECT # sent for SuspectLevel::HIGH only
+  review(event.data["request_id"])
+when Fingerly::WebhookEventType::IDENTIFICATION_COMPLETED,
+     Fingerly::WebhookEventType::IDENTIFICATION_REFUSED
+  record(event.data)
+when Fingerly::WebhookEventType::WEBHOOK_TEST
+  nil # sent to one endpoint on request; nobody subscribes to it
+end
+```
+
+The other types are `BILLING_STATUS_CHANGED` (`billing.status_changed`) and
+`USAGE_DAILY_SETTLED` (`usage.daily_settled`). `identification.completed` and `visitor.suspect` deliveries carry the
 event's project as `data["project_id"]`; `identification.refused` carries it
 only when the refused request named a known key.
 
