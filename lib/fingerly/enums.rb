@@ -165,12 +165,28 @@ module Fingerly
   # Why a native app sent no attestation: the archived document's
   # +attestation.attest_skipped+. Diagnostic only; it never lowers the score.
   module AttestSkippedReason
+    # The challenge offered no attestation: on iOS the SDK key has no Apple app
+    # ID for App Attest, on Android the app's transport returned no challenge
+    # offer.
     NOT_OFFERED = "not_offered"
+    # The device cannot make an attested key: App Attest is not supported on
+    # the iOS device, or Android is older than 7.0 (API 24).
     UNSUPPORTED = "unsupported"
+    # No usable challenge ticket: the challenge request failed, or on Android
+    # the ticket it returned was malformed.
     CHALLENGE_UNAVAILABLE = "challenge_unavailable"
+    # The platform key store failed to create, attest or sign with the key, or
+    # on Android the stored key record could not be read.
     KEY_ERROR = "key_error"
+    # Attestation did not finish in time: a key store call ran past its budget,
+    # or another identification held the attestation step too long.
     TIMEOUT = "timeout"
+    # The server rejected a new key from this install (on iOS, also when it
+    # asked for a replacement), and the SDK is waiting out a backoff before it
+    # registers another.
     BACKOFF = "backoff"
+    # The report has no usable install ID, or on iOS the stored key record could
+    # not be read or saved.
     INSTALL_UNAVAILABLE = "install_unavailable"
 
     ALL = [
