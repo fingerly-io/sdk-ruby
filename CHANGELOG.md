@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Each `Fingerly::AttestSkippedReason` constant documents when the iOS and
+  Android SDKs send it.
+- The vendored OpenAPI contract (`contract/openapi.json`) declares the enums
+  for the closed string sets the API sends.
+
 ## 0.4.0
 
 - Added named constants for the closed string sets the API sends, each a
