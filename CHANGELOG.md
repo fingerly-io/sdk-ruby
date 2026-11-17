@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Added named constants for the closed string sets the API sends, each a
+  module of frozen wire strings with a frozen `ALL` array:
+  `Fingerly::Signal` (every signal group and detector),
+  `Fingerly::SuspectLevel`, `Fingerly::Confidence`, `Fingerly::EventState`,
+  `Fingerly::Environment`, `Fingerly::Platform`, `Fingerly::AnonymityNetwork`,
+  `Fingerly::DeviceKind`, `Fingerly::VisitorKind`,
+  `Fingerly::AttestationState`, `Fingerly::AttestationStatus`,
+  `Fingerly::AttestSkippedReason`,
+  `Fingerly::VerifyReason`, `Fingerly::WebhookEventType` and
+  `Fingerly::WebhookEnvironment`. Fields stay strings, so
+  `event.suspect_level == Fingerly::SuspectLevel::HIGH` is a plain comparison
+  and a value added later still arrives. The `Fingerly::EventTrigger::SIGNAL_*`
+  and `Fingerly::EventVerification` reason constants now refer to the same
+  strings.
+
 ## 0.3.0
 
 - Synced the v3 single-call ingest contract snapshot (`openapi.json` and

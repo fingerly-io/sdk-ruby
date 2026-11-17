@@ -4,20 +4,22 @@ require "time"
 
 module Fingerly
   # One signal group that contributed to an event's suspect score.
+  #
+  # The +SIGNAL_*+ constants are the same strings as {Signal}'s.
   class EventTrigger
-    SIGNAL_ATTESTATION_FAILED = "attestation_failed"
-    SIGNAL_ATTESTATION_MISSING = "attestation_missing"
-    SIGNAL_ATTESTATION_DOWNGRADE = "attestation_downgrade"
-    SIGNAL_DEVICE_INCONSISTENT = "device_inconsistent"
-    SIGNAL_REPORT_INCOMPLETE = "report_incomplete"
-    SIGNAL_PROBE_ERRORS = "probe_errors"
-    SIGNAL_FETCH_METADATA_MISSING = "fetch_metadata_missing"
-    SIGNAL_WEB_TICKET_MISSING = "web_ticket_missing"
-    SIGNAL_WEB_TICKET_INVALID = "web_ticket_invalid"
-    SIGNAL_TAMPERING = "tampering"
-    SIGNAL_BROWSER_TAMPERING = "browser_tampering"
-    SIGNAL_CUSTOM_ROOT_CA = "custom_root_ca"
-    SIGNAL_SECONDARY_USER_PROFILE = "secondary_user_profile"
+    SIGNAL_ATTESTATION_FAILED = Signal::ATTESTATION_FAILED
+    SIGNAL_ATTESTATION_MISSING = Signal::ATTESTATION_MISSING
+    SIGNAL_ATTESTATION_DOWNGRADE = Signal::ATTESTATION_DOWNGRADE
+    SIGNAL_DEVICE_INCONSISTENT = Signal::DEVICE_INCONSISTENT
+    SIGNAL_REPORT_INCOMPLETE = Signal::REPORT_INCOMPLETE
+    SIGNAL_PROBE_ERRORS = Signal::PROBE_ERRORS
+    SIGNAL_FETCH_METADATA_MISSING = Signal::FETCH_METADATA_MISSING
+    SIGNAL_WEB_TICKET_MISSING = Signal::WEB_TICKET_MISSING
+    SIGNAL_WEB_TICKET_INVALID = Signal::WEB_TICKET_INVALID
+    SIGNAL_TAMPERING = Signal::TAMPERING
+    SIGNAL_BROWSER_TAMPERING = Signal::BROWSER_TAMPERING
+    SIGNAL_CUSTOM_ROOT_CA = Signal::CUSTOM_ROOT_CA
+    SIGNAL_SECONDARY_USER_PROFILE = Signal::SECONDARY_USER_PROFILE
 
     V3_SIGNALS = [
       SIGNAL_ATTESTATION_FAILED,
@@ -33,13 +35,14 @@ module Fingerly
       SIGNAL_SECONDARY_USER_PROFILE
     ].freeze
 
-    # @return [String, nil] the signal or signal group, such as +vpn+ or +attestation_failed+
+    # @return [String, nil] the signal or signal group, such as +vpn+ or
+    #   +attestation_failed+; see {Signal}
     attr_reader :signal
     # @return [String, nil] optional group identifier when returned alongside a raw signal
     attr_reader :group
     # @return [Integer] the group's combined weight in this score
     attr_reader :weight
-    # @return [String, nil] +low+, +medium+ or +high+
+    # @return [String, nil] +low+, +medium+ or +high+; see {Confidence}
     attr_reader :confidence
 
     # @api private
@@ -194,17 +197,17 @@ module Fingerly
   # The answer of +fingerly.events.verify+.
   #
   # {#reason} is +""+ when {#ok?}, and otherwise the first check that failed,
-  # as one of the wire strings below. The score is not checked: apply your own
+  # as one of the {VerifyReason} strings. The score is not checked: apply your own
   # policy to {#event} after {#ok?}.
   class EventVerification
-    NOT_FOUND = "not_found"
-    TOO_OLD = "too_old"
-    TAG_MISMATCH = "tag_mismatch"
-    UNIDENTIFIABLE = "unidentifiable"
-    UNSCORED = "unscored"
-    ALREADY_CONSUMED = "already_consumed"
+    NOT_FOUND = VerifyReason::NOT_FOUND
+    TOO_OLD = VerifyReason::TOO_OLD
+    TAG_MISMATCH = VerifyReason::TAG_MISMATCH
+    UNIDENTIFIABLE = VerifyReason::UNIDENTIFIABLE
+    UNSCORED = VerifyReason::UNSCORED
+    ALREADY_CONSUMED = VerifyReason::ALREADY_CONSUMED
 
-    # Every reason, in the order the checks run.
+    # Every failure reason, in the order the checks run.
     REASONS = [NOT_FOUND, TOO_OLD, TAG_MISMATCH, UNIDENTIFIABLE, UNSCORED, ALREADY_CONSUMED].freeze
 
     # @return [Boolean] whether every check passed
