@@ -36,7 +36,7 @@ device behind each session and scores how suspicious it is.
 2. **Install.** Add it to your `Gemfile`:
 
    ```ruby
-   gem "fingerly", "~> 0.2"
+   gem "fingerly", "~> 0.3.0"
    ```
 
 3. **Read an event.**
@@ -87,16 +87,23 @@ Full guide: [docs.fingerly.io/docs/sdks/ruby](https://docs.fingerly.io/docs/sdks
 | I want to | Use | Read |
 | --- | --- | --- |
 | Read an event after the browser identified a visitor | `Fingerly::Client` and `events.get` / `events.list` | [Read events](#read-events) |
+| Let one event back one backend action | `events.verify` and `events.consume` | [Verify a backend action](#verify-a-backend-action) |
+| Read or write an iOS device's DeviceCheck bits | `device_check.query` / `device_check.write` | [DeviceCheck bits](#devicecheck-bits) |
 | Check a webhook delivery is genuine | `Fingerly::Webhooks.verify` and `.parse` | [Verify webhooks](#verify-webhooks) |
 | Keep the browser SDK first-party, away from content blockers | `Fingerly::Proxy`, a Rack middleware | [First-party proxy](#first-party-proxy-same-origin) |
 
-On this page: [Read events](#read-events) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
+On this page: [Read events](#read-events) · [DeviceCheck bits](#devicecheck-bits) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
 
 ## Read events
 
 Event reads require `fly_sk_{production|staging|development}_` keys. Requests
-go to `https://api.fingerly.io`; `endpoint:` overrides that for a local
-API. Public, proxy, management, malformed and unsupported keys are rejected
+go to `https://api.fingerly.io`; `endpoint:` overrides that with a bare
+`https` origin, scheme, host and an optional port. A path, query, fragment,
+credentials, whitespace, a control character or plain `http` is a
+`ConfigurationError`, and the message never repeats the value. For a local
+test API, `allow_insecure_loopback: true` accepts `http://127.0.0.1`,
+`http://localhost` and `http://[::1]` (with any port); leave it off in
+production. Public, proxy, management, malformed and unsupported keys are rejected
 before network access, by the constructor rather than by the first call.
 Requests do not follow redirects. `get` and `list` each perform one request
 and never retry.
@@ -145,19 +152,82 @@ job. `event_not_found?` means a request id that was never issued, or one past
 retention, and is never pending.
 
 The archived document arrives moments after the event itself, so check
-`has_document?` rather than assuming it is there.
+`has_document?` rather than assuming it is there, and read `event.document`
+(`Hash` or `nil`, holding allow-listed `risk`, `attestation`, `ip_network` and
+`velocity` fields without raw signals, user agent or address). When a submission
+is unidentifiable (`identifiable == false`, such as insufficient entropy, a
+genuine embedded WebView, or an unmatched high-risk Web payload),
+`event.visitor_id` is `""`; there are no `deferred_token`, `deferred_signals` or
+`supplements` fields in `v: 3`.
+
+`Fingerly::EventTrigger::V3_SIGNALS` groups the `v: 3` anti-spoofing and
+integrity signal constants on `Fingerly::EventTrigger`:
+`SIGNAL_ATTESTATION_FAILED` (`"attestation_failed"`),
+`SIGNAL_ATTESTATION_DOWNGRADE` (`"attestation_downgrade"`),
+`SIGNAL_DEVICE_INCONSISTENT` (`"device_inconsistent"`),
+`SIGNAL_REPORT_INCOMPLETE` (`"report_incomplete"`),
+`SIGNAL_PROBE_ERRORS` (`"probe_errors"`),
+`SIGNAL_FETCH_METADATA_MISSING` (`"fetch_metadata_missing"`),
+`SIGNAL_WEB_TICKET_MISSING` (`"web_ticket_missing"`),
+`SIGNAL_WEB_TICKET_INVALID` (`"web_ticket_invalid"`),
+`SIGNAL_TAMPERING` (`"tampering"`),
+`SIGNAL_CUSTOM_ROOT_CA` (`"custom_root_ca"`) and
+`SIGNAL_SECONDARY_USER_PROFILE` (`"secondary_user_profile"`).
 
 ### Verify a backend action
 
-Read the event with a server-only key. Check that its tag matches your action,
-that it is recent, that its environment is correct, and that it was scored.
-Apply your own policy to the server's verdict. A pending event (`pending?`)
-is not a verdict: retry after `retry_after` seconds or verify asynchronously,
-rather than refusing the action. Do not authorize an action using scores or
-visitor identifiers supplied by the browser. Tags correlate events; they do
-not replace your application's authentication or replay protection. A tag must
-never hold a personal identifier, such as a user ID, email, install ID or
-advertising ID, because the server keeps tags in long-lived rollups.
+`fingerly.events.verify` reads the event with the server-only key, checks
+that it can back the action, and consumes it, so one event backs one
+decision:
+
+```ruby
+def authorize_checkout(fingerly, request_id)
+  result = fingerly.events.verify(request_id, tag: "checkout") # max_age_seconds: 300, consume: true
+  return "refuse" unless result.ok? # result.reason names the failed check
+
+  # The score policy is yours: verify never judges the score.
+  result.event.suspect_level == "low" ? "allow" : "review"
+rescue Fingerly::APIError => e
+  return "retry later" if e.pending? # not decided yet: read again after e.retry_after
+
+  raise
+end
+```
+
+The checks run in this order and stop at the first failure, whose wire string
+is `result.reason` (`""` when `result.ok?`), with a constant on
+`Fingerly::EventVerification`:
+
+1. `not_found` (`NOT_FOUND`): the request id was never issued, or the event is
+   past retention. `result.event` is `nil` for this reason only.
+2. `too_old` (`TOO_OLD`): the event occurred more than `max_age_seconds`
+   ago (300 by default), or carries no readable `occurred_at`.
+3. `tag_mismatch` (`TAG_MISMATCH`): `tag:` was given and the event's tag is not
+   exactly it. Without `tag:` nothing is compared; an empty tag raises
+   `Fingerly::ConfigurationError`.
+4. `unidentifiable` (`UNIDENTIFIABLE`): `event.visitor_id` is empty.
+5. `unscored` (`UNSCORED`): the event has no suspect score.
+6. `already_consumed` (`ALREADY_CONSUMED`): another call consumed the event
+   first.
+
+The consume runs last, only when every other check passed, so a failed check
+leaves the event unused. Pass `consume: false` to check without consuming. An
+invalid option raises `Fingerly::ConfigurationError` before anything is sent.
+Any other failure raises as it does for `events.get`. A pending event
+(`pending?`) is not a verdict: retry after `retry_after` seconds or verify
+asynchronously, rather than refusing the action.
+
+`fingerly.events.consume(request_id)` is the consume on its own. It returns a
+`Fingerly::EventConsumption` (`request_id`, `consumed_at`, `first?`) the first
+time, is never retried, and raises `Fingerly::EventAlreadyConsumedError`, a
+`Fingerly::APIError` with `event_already_consumed?` true and the first
+`consumed_at`, every time after.
+
+Do not authorize an action using scores or visitor identifiers supplied by the
+browser. Tags correlate events; they do not replace your application's
+authentication. A tag must never hold a personal identifier, such as a user
+ID, email, install ID or advertising ID, because the server keeps tags in
+long-lived rollups.
 
 ### Errors
 
@@ -169,7 +239,10 @@ call site can help with.
 ```ruby
 def decide(fingerly, request_id)
   event = fingerly.events.get(request_id)
-  event.scored? && event.suspect_level == "low" ? "allow" : "review"
+  return "review" if event.visitor_id.empty? || !event.scored?
+  return "refuse" if event.triggers.any? { |t| t.signal == Fingerly::EventTrigger::SIGNAL_ATTESTATION_FAILED }
+
+  event.suspect_level == "low" ? "allow" : "review"
 rescue Fingerly::APIError => e
   return "retry later" if e.pending? # not decided yet: read again after e.retry_after
   return "refuse" if e.event_not_found?
@@ -200,12 +273,90 @@ A read answers `404` with one of two codes, each with its own predicate:
 | `pending?` | `event_pending` | The request id was accepted and the event is still being recorded. Nothing is decided yet: read again after `retry_after` seconds (the API sends `Retry-After: 2`), or verify asynchronously. Do not treat it as fraud. |
 | `event_not_found?` | `event_not_found` | The request id was never issued, or the event is past retention. |
 
-The client never retries by itself.
+The client never retries an event read by itself; only a
+[DeviceCheck](#devicecheck-bits) call retries, and only the same request.
 
 No object in the SDK shows a credential. A client or proxy printed with
 `inspect`, `to_s`, `pp`, `to_json` or YAML shows `[redacted]` in place of its
 key, and `Marshal.dump` refuses it. The request handed to `client_ip` hides the
 visitor's cookies and authorization header the same way.
+
+## DeviceCheck bits
+
+On iOS, Apple keeps two DeviceCheck bits per device for your developer team,
+and they survive a reinstall. When DeviceCheck is on for the project's Apple
+key, Fingerly holds the DeviceCheck token that came with an identification for
+one hour, and your backend spends it once:
+
+```ruby
+bits = fingerly.device_check.query(request_id)    # Fingerly::DeviceCheckBits
+bits.found      # false when Apple holds no bits for the device yet
+bits.bit0       # true or false
+bits.last_update # "YYYY-MM", or nil when Apple holds no bits
+
+written = fingerly.device_check.write(request_id, bit0: true) # Fingerly::DeviceCheckWrite
+written.bit0    # true; a bit left out is nil, and keeps its value at Apple
+```
+
+Apple treats each DeviceCheck token as single-use, so one event pays for one
+call: a read or a write, never both. A flow that checks and then marks a
+device, such as a once-per-device free trial, takes two identifications:
+
+1. Query on the identification that asks for the trial. If the bits say the
+   device already had one, refuse it.
+2. Otherwise grant the trial and record the grant in your own data.
+3. Write the bit on the next identification from that install, such as one
+   the app makes right after the grant. Until the write lands, your own record
+   of the grant is what stops a second trial.
+
+```ruby
+# bit0 means "this device has had a free trial". The meaning is yours.
+def start_trial(fingerly, account, request_id)
+  bits = begin
+    fingerly.device_check.query(request_id)
+  rescue Fingerly::DeviceCheckError => e
+    raise unless e.not_held? || e.spent? || e.apple_rejected?
+
+    nil # no answer, not a verdict: decide without the bits
+  end
+  return "offer-paid-plan" if bits&.bit0
+
+  Trial.grant(account, device_marked: false)
+  "granted"
+end
+
+def mark_trial(fingerly, account, request_id)
+  fingerly.device_check.write(request_id, bit0: true)
+  Trial.update(account, device_marked: true)
+rescue Fingerly::DeviceCheckError => e
+  raise unless e.not_held? || e.spent?
+  # Keep device_marked false and write at the install's next identification.
+end
+```
+
+A failure raises `Fingerly::DeviceCheckError`, a `Fingerly::APIError` with a
+predicate per code:
+
+| Status | Code | Predicate |
+|---|---|---|
+| 404 | `device_check_not_held` | `not_held?` |
+| 409 | `device_check_spent` | `spent?` |
+| 409 | `device_check_busy` | `busy?` |
+| 409 | `credential_unavailable` | `credential_unavailable?` |
+| 422 | `bits_required` | `bits_required?` |
+| 422 | `apple_rejected` | `apple_rejected?`, with Apple's HTTP status in `apple_status` |
+| 503 | `device_check_unavailable` | `unavailable?` |
+
+A write that names neither bit raises `Fingerly::ConfigurationError` before
+anything is sent.
+
+The token may be retried only with the same request. After a `503` or a
+transport failure the token is kept, so the client sends the identical request
+again, up to three attempts in all; it retries nothing else. If you retry
+later yourself, repeat the same call with the same bits: a read after a failed
+write, or a write with other bits, answers `409 device_check_spent`. Apple asks
+that DeviceCheck is never the only fraud check, and that users have a way to
+have the bits reset.
 
 ## Verify webhooks
 
@@ -283,8 +434,8 @@ configuration mistake: the proxy sends nothing upstream, answers `500` with
 "The client IP callback returned no valid address", and logs it once per
 process rather than once per visitor.
 
-Then point the browser SDK at the same path. Both of its calls go there, with
-nothing appended:
+Then point the client SDK at the same path. Browser and proxied native SDKs post
+a single `v: 3` identification envelope there, with nothing appended:
 
 ```ts
 import { load } from '@fingerly/web-js'
@@ -292,44 +443,34 @@ import { load } from '@fingerly/web-js'
 const fingerly = await load({ apiKey: 'fly_pk_…', endpoints: '/k7x2qm4a' })
 ```
 
-### Mounting without a path
-
-`path` is optional where the framework already routes the path to the proxy,
-as a Rails `mount` or a `Rack::URLMap` entry does. Omit it there: the mount has
-already moved the path into `SCRIPT_NAME`. A mount matches a prefix, but the
-proxy still answers only the mount's exact path: `/k7x2qm4a/admin` or
-`/k7x2qm4a/` routed to it get `404`. Rails hands a mount the same `PATH_INFO`
-with and without a trailing slash, so the proxy tells them apart by the raw
-request line in `REQUEST_URI`, which Puma and Falcon provide.
-
-```ruby
-# config/routes.rb
-mount Fingerly::Proxy.new(
-  proxy_key: ENV.fetch("FINGERLY_PROXY_KEY"),
-  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
-) => "/k7x2qm4a"
-```
-
-As middleware it sees every request in the stack, so there `path` is required
-and its absence is a `ConfigurationError` at start-up.
+`proxy_key` and `path` are required. A proxy key that is not
+`fly_px_<environment>_...` for `production`, `staging` or `development`, or a
+missing `path`, is a `ConfigurationError` at start-up. The proxy matches it
+exactly against `PATH_INFO`, so use it as middleware, as above, or run it as
+the whole application. Do not put it behind a Rails `mount` or a
+`Rack::URLMap` entry: those move the path into `SCRIPT_NAME`, and the proxy
+then sees a path that is not its own and answers `404`.
 
 ### What the proxy does
 
 | Rule | Behaviour |
 | --- | --- |
-| Path match | Only the configured path, matched exactly and case-sensitively: `/k7x2qm4a/`, `//k7x2qm4a`, `/k7x2qm4a/.`, `/k7x2qm4a%2F` and `/k7x2qm4a/admin` are not its own. Anything else is passed along to your application, or answered `404` when the proxy has no application behind it. |
-| Other methods | On its own path, anything but `POST` gets `405`. |
-| Upstream | Every request it accepts goes to one URL, `https://api.fingerly.io/api/v1/ingest`, which tells the identification from the report that follows it by the body. `api_version:` changes only the version in that URL. |
+| Path match | Only the configured path, matched exactly and case-sensitively: `/k7x2qm4a/`, `//k7x2qm4a`, `/k7x2qm4a/.`, `/k7x2qm4a%2F`, `/k7x2qm4a/admin` and retired `/supplement` paths are not its own. Anything else is passed along to your application, or answered `404` when the proxy has no application behind it. |
+| Other methods | On its own path, anything but `POST` (plus `OPTIONS` when `allowed_origins:` is configured) gets `405`. Methods are compared exactly, so `post` gets `405` too. |
+| Own answers | Every answer the proxy writes itself carries `cache-control: no-store`. |
+| Upstream | Every request it accepts goes verbatim as raw bytes to one URL, `https://api.fingerly.io/api/v1/ingest`. `api_version:` changes only the version in that URL. |
 | Event reads | Nothing else is reachable through it, event reads included: they need a secret key and stay unreachable from a browser by construction. |
-| Public key | The browser must present a public key from the same environment as the proxy key, or the request gets `401`. |
+| Public key | The caller must present a public key (`fly_pk_...`) from the same environment as the proxy key, or the request gets `401` and nothing is forwarded; a secret key is refused the same way. |
+| Credentials upstream | Every request carries the proxy key as `X-Fingerly-Proxy-Key` and the caller's public key as `X-API-Key`, never a secret key. |
+| Origin or platform | Requests without either `Origin` or a validated native `X-Fingerly-SDK-Platform` header (`ios`, `android`, `react-native`, `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`, `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`, `kotlin-multiplatform`) are rejected locally with `400` (`missing_origin`), and `x-fingerly-origin` is never synthesized from `Host`, `Referer` or the request URL. A request is forwarded on one channel only: with an `Origin` the proxy sends `x-fingerly-origin` and drops the platform header, and without one it sends the validated platform. |
 | Body size | Bodies over 1 MiB get `413`, enforced while reading rather than after buffering. |
-| Forwarded upstream | Only the content type, the visitor metadata Fingerly needs, and an `Idempotency-Key`. Customer cookies and authorization headers never are. |
-| Proxy identity | The proxy reports itself upstream as `ruby/0.2.0` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
+| Forwarded headers | All incoming `x-fingerly-*`, `cookie` and `authorization` headers are stripped, restoring only a validated `x-fingerly-sdk-platform` (when there is no `Origin`) alongside `x-fingerly-host`, `idempotency-key`, `sec-fetch-*` and `sec-ch-ua-*`. |
+| Proxy identity | The proxy reports itself upstream as `ruby/0.3.0` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
 | Fingerly unreachable | The visitor gets a gateway error rather than your application's `500`. |
 | Deadline passes | `504 Gateway timeout` when `timeout:` (5 seconds by default) passes. |
-| Any other upstream failure | `502 Bad gateway`, whether the connection was refused or reset, the name did not resolve, or the answer was malformed, cut short or over 4 MiB. |
+| Any other upstream failure | `502 Bad gateway`, whether the connection was refused or reset, the name did not resolve, or the answer was malformed, cut short or over 4 MiB. Redirects are never followed, and an upstream redirect or a status outside `200` to `599` is answered `502` as well. |
 | Truncated answers | The whole answer is read before anything is written back, so a truncated response is never relayed as a success. |
-| Failure logging | Each failure logs one line, without a stack trace, to `logger:` when you pass one, to `rack.logger` when your server provides it, and to standard error otherwise. |
+| Failure logging | Each failure logs one line, without a stack trace, to `logger:` when you pass one, to `rack.logger` when your server provides it, and to standard error otherwise. The line names the kind of failure only, never the upstream address or a key. |
 | Relayed back | Only `content-type`, `x-request-id`, `ratelimit-limit`, `ratelimit-remaining` and `retry-after`, plus `cache-control: no-store` set by the proxy. A content blocker can match a response header by name, and an allowlist keeps anything that names Fingerly off the response, whatever the API adds later. |
 | Header shape | Relayed headers are lowercase and repeats joined with `", "`, which is the one shape Rack 2 and Rack 3 both accept: Rack 3 refuses an uppercase name outright, and Rack 2 refuses the array Rack 3 would rather have. |
 
@@ -338,6 +479,13 @@ request before calling the application, as Puma does, has already read it by
 then, so bound request bodies there with the server's or the load balancer's own
 limit as well. Falcon streams the body, so there the proxy stops reading at the
 limit.
+
+`upstream:` takes a bare origin, scheme, host and an optional port, such as
+`https://api.fingerly.io`. A path, query, fragment, credentials, whitespace or
+a control character is a `ConfigurationError`, and so is plain `http`. For a
+local test API, `allow_insecure_loopback: true` accepts `http://127.0.0.1`,
+`http://localhost` and `http://[::1]` (with any port), and nothing else; leave
+it off in production.
 
 <details>
 <summary>Why the middleware decides from the path alone, and what <code>path</code> means</summary>

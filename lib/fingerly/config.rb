@@ -61,28 +61,46 @@ module Fingerly
       Scope.new(match[2])
     end
 
-    # Validates a caller-supplied API origin.
+    # Hosts a plain HTTP origin may name, and only with
+    # +allow_insecure_loopback: true+.
+    LOOPBACK_HOSTS = %w[127.0.0.1 localhost [::1]].freeze
+
+    # Validates a caller-supplied API origin: the client's +endpoint+ or the
+    # proxy's +upstream+, both of which carry a key.
     #
-    # Credentials, queries and fragments are refused: they would be attached to
-    # every authenticated request, and embedded credentials would leak on a
-    # redirect.
+    # Only a bare origin is accepted: scheme, host and an optional port. The
+    # scheme is +https+; plain +http+ is accepted only for 127.0.0.1,
+    # localhost or [::1], and only when the caller opts in for development.
+    # The origin returned is rebuilt from the parsed parts, never the input,
+    # and no error repeats the value, which may have been pasted from
+    # somewhere it should not be.
     #
-    # @return [String] the origin without trailing slashes
-    # @raise [ConfigurationError] if the URL is malformed or carries any of those
-    def normalize_endpoint(value)
+    # @param option [String] the option's name, for the error message
+    # @return [String] the origin, such as +https://api.fingerly.io+
+    # @raise [ConfigurationError] if the value is anything else
+    def normalize_origin(value, option, allow_insecure_loopback: false)
+      shape = "#{option} must be https://host or https://host:port, with no path, " \
+              "query, fragment, credentials, whitespace or control characters"
+      printable = value.is_a?(String) && value.b.match?(/\A[\x21-\x7e]+\z/)
+      raise ConfigurationError, shape unless printable
+
       uri = begin
-        URI.parse(value.to_s)
+        URI.parse(value)
       rescue URI::InvalidURIError
         nil
       end
-      usable = uri.is_a?(URI::HTTP) && !uri.host.to_s.empty? &&
-               uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
-      unless usable
+      bare = uri.is_a?(URI::HTTP) && !uri.host.to_s.empty? && uri.userinfo.nil? &&
+             uri.query.nil? && uri.fragment.nil? && ["", "/"].include?(uri.path.to_s)
+      raise ConfigurationError, shape unless bare
+
+      if uri.scheme == "http" && !(allow_insecure_loopback && LOOPBACK_HOSTS.include?(uri.host))
         raise ConfigurationError,
-              "endpoint must be an HTTP(S) URL without credentials, query, or fragment"
+              "#{option} must use https; plain http is allowed only for 127.0.0.1, " \
+              "localhost or [::1] with allow_insecure_loopback: true"
       end
 
-      value.to_s.sub(%r{/+\z}, "")
+      port = uri.port == uri.default_port ? "" : ":#{uri.port}"
+      "#{uri.scheme}://#{uri.host}#{port}"
     end
 
     # Validates an API route version before it is spliced into a URL.

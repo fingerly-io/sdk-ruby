@@ -82,7 +82,8 @@ class EventsTest < Minitest::Test
     end
 
     event = Fingerly::Client.new(
-      secret_key: SECRET_KEY, endpoint: "http://[::1]:#{server.addr[1]}"
+      secret_key: SECRET_KEY, endpoint: "http://[::1]:#{server.addr[1]}",
+      allow_insecure_loopback: true
     ).events.get("r1")
 
     assert_equal "r1", event.request_id
@@ -252,6 +253,7 @@ class EventsTest < Minitest::Test
   private
 
   def client(api)
-    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin)
+    Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin,
+                         allow_insecure_loopback: true)
   end
 end

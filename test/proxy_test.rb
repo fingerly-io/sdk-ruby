@@ -26,9 +26,59 @@ class ProxyTest < Minitest::Test
   UNPRINTABLE_CONTENT_TYPE = "text/plain\x00"
   UNPRINTABLE_ORIGIN = "https://shop.example\x07"
 
-  def test_refuses_to_start_without_a_key
+  def test_refuses_to_start_without_a_proxy_key
+    error = assert_raises(ArgumentError) do
+      Fingerly::Proxy.new(path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+    end
+    assert_match(/proxy_key/, error.message)
     assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Proxy.new(client_ip: ->(_r) { "203.0.113.7" })
+      Fingerly::Proxy.new(proxy_key: nil, path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+    end
+  end
+
+  def test_refuses_a_secret_key_keyword
+    assert_raises(ArgumentError) do
+      Fingerly::Proxy.new(secret_key: "fly_sk_production_secret", path: PATH,
+                          client_ip: ->(_r) { "203.0.113.7" })
+    end
+    error = assert_raises(ArgumentError) do
+      Fingerly::Proxy.new(proxy_key: PROXY_KEY, secret_key: "fly_sk_production_secret",
+                          path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+    end
+    assert_match(/unknown keyword: :secret_key/, error.message)
+  end
+
+  def test_refuses_a_malformed_proxy_key_with_a_clear_message
+    ["fly_px_production_", "fly_px_preview_proxy", "fly_px_production_a b",
+     "fly_px_production_proxy\n", "FLY_PX_PRODUCTION_PROXY", "", 42].each do |key|
+      error = assert_raises(Fingerly::ConfigurationError, "accepted #{key.inspect}") do
+        Fingerly::Proxy.new(proxy_key: key, path: PATH, client_ip: ->(_r) { "203.0.113.7" })
+      end
+      assert_match(/proxy_key must be a Fingerly proxy key/, error.message)
+    end
+  end
+
+  def test_never_sends_a_secret_key_upstream
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      %w[fly_sk_production_secret fly_sk_staging_secret fly_sk_development_secret].each do |key|
+        response = post(api, PATH, "{}", "HTTP_X_API_KEY" => key)
+
+        assert_equal 401, response.status, "accepted #{key}"
+        assert_equal "Unauthorized", response.body
+        assert_equal "text/plain; charset=utf-8", response.headers["content-type"]
+        assert_equal "no-store", response.headers["cache-control"]
+      end
+
+      assert_empty api.requests
+
+      assert_equal 200, post(api, PATH, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY).status
+      forwarded = api.requests.fetch(0)
+
+      assert_equal PUBLIC_KEY, forwarded.header("x-api-key")
+      assert_equal PROXY_KEY, forwarded.header("x-fingerly-proxy-key")
+      forwarded.headers.each_value do |value|
+        refute_match(/fly_sk_/, Array(value).join(", "))
+      end
     end
   end
 
@@ -36,15 +86,6 @@ class ProxyTest < Minitest::Test
     assert_raises(ArgumentError) { Fingerly::Proxy.new(proxy_key: PROXY_KEY) }
     assert_raises(Fingerly::ConfigurationError) do
       Fingerly::Proxy.new(proxy_key: PROXY_KEY, client_ip: "not callable")
-    end
-  end
-
-  def test_refuses_both_kinds_of_key_at_once
-    assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Proxy.new(
-        proxy_key: PROXY_KEY, secret_key: "fly_sk_production_secret",
-        client_ip: ->(_r) { "203.0.113.7" }
-      )
     end
   end
 
@@ -97,7 +138,7 @@ class ProxyTest < Minitest::Test
     calls = 0
     proxy = Fingerly::Proxy.new(
       proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9", logger: QUIET,
-      client_ip: lambda { |_r|
+      allow_insecure_loopback: true, client_ip: lambda { |_r|
         calls += 1
         "203.0.113.7\xFF"
       }
@@ -114,6 +155,7 @@ class ProxyTest < Minitest::Test
     status, = proxy.call(
       Rack::MockRequest.env_for(PATH, method: "POST", input: "{}",
                                       "HTTP_X_API_KEY" => PUBLIC_KEY,
+                                      "HTTP_ORIGIN" => "https://shop.example",
                                       "HTTP_USER_AGENT" => "caf\xC3\xA9\xFF")
     )
 
@@ -121,13 +163,14 @@ class ProxyTest < Minitest::Test
     assert_equal 1, calls
   end
 
-  # Middleware sees every request in the stack, so without a path it would
-  # take the application's own routes from it.
-  def test_refuses_to_be_middleware_without_a_path
-    assert_raises(Fingerly::ConfigurationError) do
-      Fingerly::Proxy.new(
-        ->(_env) { [200, {}, []] }, proxy_key: PROXY_KEY, client_ip: ->(_r) { "203.0.113.7" }
-      )
+  # The path is what the proxy matches exactly, as middleware or on its own.
+  def test_refuses_to_start_without_a_path
+    [->(_env) { [200, {}, []] }, nil].each do |app|
+      error = assert_raises(Fingerly::ConfigurationError) do
+        Fingerly::Proxy.new(app, proxy_key: PROXY_KEY, client_ip: ->(_r) { "203.0.113.7" })
+      end
+
+      assert_equal "path is required", error.message
     end
   end
 
@@ -152,6 +195,8 @@ class ProxyTest < Minitest::Test
     "#{PATH};x" => false,
     PATH.upcase => false,                    # case-sensitive
     "#{PATH}/admin" => false,                # nothing under it
+    "#{PATH}/supplement" => false,           # retired supplement paths
+    "#{PATH}/events/abc/supplement" => false,
     "#{PATH}x" => false,
     "/k7x2qm4" => false,
     "/other" => false,
@@ -169,20 +214,13 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  def test_recognises_every_path_without_one_configured
-    proxy = build("http://127.0.0.1:9", path: nil)
-
-    [PATH, "/other", "/", ""].each do |path|
-      assert proxy.handles?(path), "refused #{path.inspect}"
-    end
-  end
-
   def test_forwards_an_identification_with_the_visitor_metadata
-    FakeAPI.run(FakeAPI.json(200, '{"visitor_id":"v1"}')) do |api|
+    FakeAPI.run(FakeAPI.json(200, "{\"visitor_id\":\"v1\"}")) do |api|
       response = post(
-        api, PATH, '{"payload":1}',
+        api, PATH, "{\"payload\":1}",
         "HTTP_X_API_KEY" => PUBLIC_KEY,
         "HTTP_ORIGIN" => "https://shop.example",
+        "HTTP_HOST" => "shop.example",
         "HTTP_USER_AGENT" => "Mozilla/5.0",
         "HTTP_IDEMPOTENCY_KEY" => "idem-1",
         "HTTP_COOKIE" => "session=secret",
@@ -194,13 +232,14 @@ class ProxyTest < Minitest::Test
 
       assert_equal "POST", sent.request_method
       assert_equal "/api/v1/ingest", sent.path
-      assert_equal '{"payload":1}', sent.body
+      assert_equal "{\"payload\":1}", sent.body
 
       # The browser's public key travels on, alongside the proxy's own.
       assert_equal PUBLIC_KEY, sent.header("x-api-key")
       assert_equal PROXY_KEY, sent.header("x-fingerly-proxy-key")
       assert_equal "203.0.113.7", sent.header("x-fingerly-client-ip")
       assert_equal "https://shop.example", sent.header("x-fingerly-origin")
+      assert_equal "shop.example", sent.header("x-fingerly-host")
       assert_equal "Mozilla/5.0", sent.header("x-fingerly-user-agent")
       assert_equal "idem-1", sent.header("idempotency-key")
       assert_equal "fingerly-ruby/#{Fingerly::VERSION}", sent.header("user-agent")
@@ -212,15 +251,14 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  # The deferred report goes to the same path and the same upstream URL; the
-  # API tells it from an identification by its body.
-  def test_forwards_the_deferred_report_to_the_same_url
-    FakeAPI.run(FakeAPI.json(202, '{"request_id":"r1","duplicate":false}')) do |api|
-      response = post(api, PATH, '{"token":"t1"}', "HTTP_X_API_KEY" => PUBLIC_KEY)
+  def test_preserves_raw_body_bytes_verbatim_without_reencoding
+    raw_envelope = "{\"v\":3,\"signals\":{\"price\":142.50,\"order\":[2,1],\"space\":1 }}"
+    FakeAPI.run(FakeAPI.json(200, "{\"request_id\":\"r1\",\"visitor_id\":\"v1\"}")) do |api|
+      response = post(api, PATH, raw_envelope, "HTTP_X_API_KEY" => PUBLIC_KEY)
 
-      assert_equal 202, response.status
+      assert_equal 200, response.status
       assert_equal "/api/v1/ingest", api.requests.first.path
-      assert_equal '{"token":"t1"}', api.requests.first.body
+      assert_equal raw_envelope, api.requests.first.body
     end
   end
 
@@ -228,10 +266,11 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, api_version: "v2", upstream: api.origin,
-        client_ip: ->(_r) { "203.0.113.7" }
+        allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+      )
 
       assert_equal 200, response.status
       assert_equal "/api/v2/ingest", api.requests.first.path
@@ -252,8 +291,12 @@ class ProxyTest < Minitest::Test
   # told that this path exists.
   def test_refuses_another_path_before_the_method
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      ["#{PATH}/admin", "/other", "/api/v1/events/abc"].each do |path|
-        assert_equal 404, post(api, path, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY).status, path
+      ["#{PATH}/admin", "#{PATH}/supplement", "#{PATH}/events/abc/supplement",
+       "/other", "/api/v1/events/abc"].each do |path|
+        res = post(api, path, "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+
+        assert_equal 404, res.status, path
+        assert_equal "no-store", res.headers["cache-control"], path
         assert_equal 404, request(api).get(path).status, path
       end
 
@@ -278,20 +321,6 @@ class ProxyTest < Minitest::Test
     end
   end
 
-  def test_the_deprecated_secret_key_mode_authenticates_on_its_own
-    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      proxy = Fingerly::Proxy.new(
-        secret_key: "fly_sk_production_secret", path: PATH,
-        upstream: api.origin, client_ip: ->(_r) { "203.0.113.7" }
-      )
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(PATH, input: "{}")
-
-      assert_equal 200, response.status
-      assert_equal "fly_sk_production_secret", api.requests.first.header("x-api-key")
-      assert_nil api.requests.first.header("x-fingerly-proxy-key")
-    end
-  end
-
   def test_refuses_a_declared_body_over_the_limit
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       response = post(api, PATH, "a" * 4096, max: 32, "HTTP_X_API_KEY" => PUBLIC_KEY)
@@ -306,7 +335,7 @@ class ProxyTest < Minitest::Test
       # No declared length, so only reading can tell.
       env = Rack::MockRequest.env_for(
         PATH, method: "POST", input: StringIO.new("a" * 4096),
-              "HTTP_X_API_KEY" => PUBLIC_KEY
+              "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
       )
       env.delete("CONTENT_LENGTH")
       status, = build(api.origin, max_body_bytes: 32).call(env)
@@ -320,10 +349,11 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
-        client_ip: ->(_r) { INJECTED_IP }
+        allow_insecure_loopback: true, client_ip: ->(_r) { INJECTED_IP }
       )
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+      )
 
       assert_equal 500, response.status
       assert_empty api.requests
@@ -364,9 +394,11 @@ class ProxyTest < Minitest::Test
     logger = Object.new
     logger.define_singleton_method(:warn) { |line| lines << line }
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9",
-                                logger: logger, client_ip: ->(_r) {})
+                                allow_insecure_loopback: true, logger: logger, client_ip: ->(_r) {})
     3.times do
-      Rack::MockRequest.new(proxy).post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      Rack::MockRequest.new(proxy).post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+      )
     end
 
     assert_equal 1, lines.size
@@ -402,13 +434,15 @@ class ProxyTest < Minitest::Test
       response = post(
         api, PATH, "{}",
         "HTTP_X_API_KEY" => PUBLIC_KEY,
+        "HTTP_X_FINGERLY_SDK_PLATFORM" => "ios",
         "CONTENT_TYPE" => UNPRINTABLE_CONTENT_TYPE,
         "HTTP_ORIGIN" => UNPRINTABLE_ORIGIN
       )
 
       assert_equal 200, response.status
       assert_equal "application/json", api.requests.first.header("content-type")
-      assert_equal "", api.requests.first.header("x-fingerly-origin")
+      assert_nil api.requests.first.header("x-fingerly-origin")
+      assert_equal "ios", api.requests.first.header("x-fingerly-sdk-platform")
     end
   end
 
@@ -496,7 +530,8 @@ class ProxyTest < Minitest::Test
       assert_equal "", response.body
 
       env = Rack::MockRequest.env_for(PATH, method: "POST", input: "{}",
-                                            "HTTP_X_API_KEY" => PUBLIC_KEY)
+                                            "HTTP_X_API_KEY" => PUBLIC_KEY,
+                                            "HTTP_ORIGIN" => "https://shop.example")
       _status, _headers, body = build(api.origin).call(env)
 
       assert_empty body, "not even one empty chunk"
@@ -505,8 +540,9 @@ class ProxyTest < Minitest::Test
 
   def test_answers_bad_gateway_when_fingerly_cannot_be_reached
     proxy = build("http://127.0.0.1:9")
-    response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+    response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+      PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+    )
 
     assert_gateway_error 502, "Bad gateway", response
   end
@@ -528,8 +564,9 @@ class ProxyTest < Minitest::Test
   def test_answers_bad_gateway_for_every_kind_of_upstream_failure
     UPSTREAM_FAILURES.each do |label, raw|
       RawServer.run(raw) do |server|
-        response = Rack::MockRequest.new(Rack::Lint.new(build(server.origin)))
-                                    .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+        response = Rack::MockRequest.new(Rack::Lint.new(build(server.origin))).post(
+          PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+        )
 
         assert_gateway_error 502, "Bad gateway", response, label
       end
@@ -542,10 +579,11 @@ class ProxyTest < Minitest::Test
     logger.define_singleton_method(:warn) { |line| lines << line }
     proxy = Fingerly::Proxy.new(
       proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9", logger: logger,
-      client_ip: ->(_r) { "203.0.113.7" }
+      allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
     )
-    Rack::MockRequest.new(Rack::Lint.new(proxy))
-                     .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+    Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+      PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+    )
 
     assert_equal 1, lines.size
     assert_match(/\Afingerly proxy: 502 .*ECONNREFUSED/, lines.first)
@@ -558,9 +596,10 @@ class ProxyTest < Minitest::Test
     logger = Object.new
     logger.define_singleton_method(:warn) { |line| lines << line }
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: "http://127.0.0.1:9",
-                                client_ip: ->(_r) { "203.0.113.7" })
+                                allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" })
     Rack::MockRequest.new(proxy).post(
-      PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "rack.logger" => logger
+      PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY,
+            "HTTP_ORIGIN" => "https://shop.example", "rack.logger" => logger
     )
 
     assert_equal 1, lines.size
@@ -578,7 +617,9 @@ class ProxyTest < Minitest::Test
   def test_ends_quietly_when_the_visitor_disconnects_mid_body
     input = Object.new
     input.define_singleton_method(:read) { |*_args| raise EOFError, "client went away" }
-    env = Rack::MockRequest.env_for(PATH, method: "POST", "HTTP_X_API_KEY" => PUBLIC_KEY)
+    env = Rack::MockRequest.env_for(
+      PATH, method: "POST", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+    )
     env["rack.input"] = input
     status, = build("http://127.0.0.1:9").call(env)
 
@@ -593,10 +634,11 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(handler) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET, timeout: 0.3,
-        client_ip: ->(_r) { "203.0.113.7" }
+        allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+      )
 
       assert_gateway_error 504, "Gateway timeout", response
     end
@@ -606,11 +648,12 @@ class ProxyTest < Minitest::Test
     TricklingServer.run(interval: 0.2, lines: 50) do |server|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: server.origin, logger: QUIET, timeout: 0.75,
-        client_ip: ->(_r) { "203.0.113.7" }
+        allow_insecure_loopback: true, client_ip: ->(_r) { "203.0.113.7" }
       )
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      response = Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+      )
 
       assert_equal 504, response.status
       assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
@@ -627,10 +670,10 @@ class ProxyTest < Minitest::Test
       end
       proxy = build(api.origin, app: app)
       response = Rack::MockRequest.new(Rack::Lint.new(proxy))
-                                  .post("/orders", input: '{"order":1}')
+                                  .post("/orders", input: "{\"order\":1}")
 
       assert_equal 200, response.status
-      assert_equal 'app read: {"order":1}', response.body
+      assert_equal "app read: {\"order\":1}", response.body
       assert_empty api.requests
     end
   end
@@ -642,58 +685,14 @@ class ProxyTest < Minitest::Test
     assert_equal 404, response.status
   end
 
-  # Rack::URLMap, like a Rails mount, routes the path here and moves it into
-  # SCRIPT_NAME, so the proxy takes no path of its own.
-  def test_answers_where_a_mount_routes_it_without_a_path
-    FakeAPI.run(FakeAPI.json(200, '{"visitor_id":"v1"}')) do |api|
-      mapped = Rack::URLMap.new(PATH => build(api.origin, path: nil))
-      response = Rack::MockRequest.new(Rack::Lint.new(mapped))
-                                  .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
-
-      assert_equal 200, response.status
-      assert_equal "/api/v1/ingest", api.requests.first.path
-    end
-  end
-
-  # A mount matches a prefix; the proxy still answers only the exact path.
-  # Rails hands the mount PATH_INFO "/" for the path with or without a
-  # trailing slash, so the raw request line decides.
-  MOUNTED = {
-    [PATH, "", PATH] => true,                # Rack::URLMap, exact
-    [PATH, "/", PATH] => true,               # Rails mount, exact
-    [PATH, "/", "#{PATH}?x=1"] => true,      # a query is not part of the path
-    ["/shop#{PATH}", "", "/shop#{PATH}"] => true, # a sub-URI deployment
-    [PATH, "/", "http://shop.example#{PATH}"] => true, # absolute-form target
-    [PATH, "/", "#{PATH}/"] => false, # trailing slash
-    [PATH, "/", "#{PATH}//"] => false,
-    [PATH, "/admin", "#{PATH}/admin"] => false,
-    [PATH, "/.", "#{PATH}/."] => false,
-    [PATH, "/;x", "#{PATH};x"] => false,
-    [PATH, "/%2F", "#{PATH}%2F"] => false
-  }.freeze
-
-  def test_a_mount_answers_only_its_exact_path
-    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
-      proxy = build(api.origin, path: nil)
-      MOUNTED.each do |(script_name, path_info, request_uri), answered|
-        env = Rack::MockRequest.env_for(request_uri, method: "POST", input: "{}",
-                                                     "HTTP_X_API_KEY" => PUBLIC_KEY)
-        env.merge!("SCRIPT_NAME" => script_name, "PATH_INFO" => path_info,
-                   "REQUEST_URI" => request_uri)
-        status, = proxy.call(env)
-
-        assert_equal answered ? 200 : 404, status, request_uri
-      end
-    end
-  end
-
   # A sub-URI deployment is a detail the configured path knows nothing
   # about. Matching on PATH_INFO rather than SCRIPT_NAME + PATH_INFO is what
   # keeps the same configuration working in both places.
   def test_works_under_a_sub_uri_deployment
-    FakeAPI.run(FakeAPI.json(200, '{"visitor_id":"v1"}')) do |api|
+    FakeAPI.run(FakeAPI.json(200, "{\"visitor_id\":\"v1\"}")) do |api|
       env = Rack::MockRequest.env_for(
-        "/shop#{PATH}", method: "POST", input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY
+        "/shop#{PATH}", method: "POST", input: "{}",
+                        "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
       )
       env["SCRIPT_NAME"] = "/shop"
       env["PATH_INFO"] = PATH
@@ -708,11 +707,12 @@ class ProxyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
-        client_ip: ->(request) { request.header("CF-Connecting-IP") }
+        allow_insecure_loopback: true, client_ip: ->(request) { request.header("CF-Connecting-IP") }
       )
       Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
         PATH, input: "{}",
               "HTTP_X_API_KEY" => PUBLIC_KEY,
+              "HTTP_ORIGIN" => "https://shop.example",
               "HTTP_CF_CONNECTING_IP" => "198.51.100.9",
               "HTTP_X_FORWARDED_FOR" => "10.0.0.1, 198.51.100.9"
       )
@@ -726,13 +726,14 @@ class ProxyTest < Minitest::Test
       seen = nil
       proxy = Fingerly::Proxy.new(
         proxy_key: PROXY_KEY, path: PATH, upstream: api.origin, logger: QUIET,
-        client_ip: lambda { |request|
+        allow_insecure_loopback: true, client_ip: lambda { |request|
           seen = request
           request.peer_host
         }
       )
-      Rack::MockRequest.new(Rack::Lint.new(proxy))
-                       .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY)
+      Rack::MockRequest.new(Rack::Lint.new(proxy)).post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example"
+      )
 
       assert_equal "POST", seen.request_method
       assert_equal PATH, seen.path
@@ -741,13 +742,184 @@ class ProxyTest < Minitest::Test
     end
   end
 
+  def test_refuses_an_originless_browser_post_without_synthesizing_origin
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      response = post(
+        api, PATH, "{}",
+        "HTTP_ORIGIN" => nil,
+        "HTTP_X_API_KEY" => PUBLIC_KEY,
+        "HTTP_HOST" => "shop.example",
+        "HTTP_REFERER" => "https://shop.example/checkout"
+      )
+
+      assert_equal 400, response.status
+      assert_equal "no-store", response.headers["cache-control"]
+      assert_equal "application/json", response.headers["content-type"]
+      assert_equal "missing_origin", JSON.parse(response.body).dig("error", "code")
+      assert_empty api.requests
+    end
+  end
+
+  def test_discards_invalid_or_smuggled_sdk_platform_values_without_origin
+    invalid = ["web", "browser", "IOS", " ios ", "ios,android", "electron"]
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      invalid.each do |platform|
+        res = post(api, PATH, "{}", "HTTP_ORIGIN" => nil,
+                                    "HTTP_X_API_KEY" => PUBLIC_KEY,
+                                    "HTTP_X_FINGERLY_SDK_PLATFORM" => platform)
+
+        assert_equal 400, res.status, platform.inspect
+      end
+
+      bad_utf8 = Rack::MockRequest.env_for(
+        PATH, method: "POST", input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY,
+              "HTTP_X_FINGERLY_SDK_PLATFORM" => "ios\xFF"
+      )
+      status_utf8, = build(api.origin).call(bad_utf8)
+
+      assert_equal 400, status_utf8
+
+      env = Rack::MockRequest.env_for(
+        PATH, method: "POST", input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY,
+              "HTTP_X_FINGERLY_SDK_PLATFORM" => "ios", "HTTP_x_fingerly_sdk_platform" => "android"
+      )
+      status, = build(api.origin).call(env)
+
+      assert_equal 400, status
+      assert_empty api.requests
+    end
+  end
+
+  VALID_NATIVE_PLATFORMS = %w[
+    ios android react-native react-native-ios react-native-android
+    flutter flutter-ios flutter-android lynx-ios lynx-android
+    capacitor kotlin-multiplatform
+  ].freeze
+
+  def test_forwards_valid_native_platforms_without_origin_or_synthesized_origin
+    FakeAPI.run(FakeAPI.json(200, "{\"visitor_id\":\"v_native\"}")) do |api|
+      VALID_NATIVE_PLATFORMS.each do |platform|
+        api.reset!
+        res = post(api, PATH, "{\"v\":3}", "HTTP_ORIGIN" => nil,
+                                           "HTTP_X_API_KEY" => PUBLIC_KEY,
+                                           "HTTP_X_FINGERLY_SDK_PLATFORM" => platform,
+                                           "HTTP_HOST" => "shop.example")
+
+        assert_equal 200, res.status, platform
+        sent = api.requests.first
+
+        assert_equal platform, sent.header("x-fingerly-sdk-platform")
+        assert_nil sent.header("x-fingerly-origin")
+        assert_equal "shop.example", sent.header("x-fingerly-host")
+      end
+    end
+  end
+
+  def test_strips_all_caller_spoofed_fingerly_headers
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      res = post(
+        api, PATH, "{}",
+        "HTTP_X_API_KEY" => PUBLIC_KEY,
+        "HTTP_ORIGIN" => "https://shop.example",
+        "HTTP_HOST" => "shop.example",
+        "HTTP_X_FINGERLY_PROXY_KEY" => "fly_px_production_attacker",
+        "HTTP_X_FINGERLY_KEY" => "fly_px_production_attacker",
+        "HTTP_X_FINGERLY_CLIENT_IP" => "198.51.100.250",
+        "HTTP_X_FINGERLY_FORWARDED_FOR" => "198.51.100.250",
+        "HTTP_X_FINGERLY_ORIGIN" => "https://evil.example",
+        "HTTP_X_FINGERLY_HOST" => "evil.example",
+        "HTTP_X_FINGERLY_EDGE_TLS_VERSION" => "TLSv1.3",
+        "HTTP_X_FINGERLY_SDK_PLATFORM" => "web",
+        "HTTP_X_FINGERLY_CUSTOM" => "spoof"
+      )
+
+      assert_equal 200, res.status
+      sent = api.requests.first
+
+      assert_equal PROXY_KEY, sent.header("x-fingerly-proxy-key")
+      assert_equal "203.0.113.7", sent.header("x-fingerly-client-ip")
+      assert_equal "https://shop.example", sent.header("x-fingerly-origin")
+      assert_equal "shop.example", sent.header("x-fingerly-host")
+      assert_nil sent.header("x-fingerly-key")
+      assert_nil sent.header("x-fingerly-forwarded-for")
+      assert_nil sent.header("x-fingerly-edge-tls-version")
+      assert_nil sent.header("x-fingerly-sdk-platform")
+      assert_nil sent.header("x-fingerly-custom")
+    end
+  end
+
+  def test_forwards_fetch_metadata_and_client_hint_headers_and_relays_409_retry_after
+    handler = lambda do |_req, res|
+      res.status = 409
+      res["content-type"] = "application/json"
+      res["retry-after"] = "1"
+      res["x-request-id"] = "req-409"
+      res.body = "{\"error\":{\"code\":\"request_in_progress\"}}"
+    end
+    FakeAPI.run(handler) do |api|
+      res = post(
+        api, PATH, "{}",
+        "HTTP_X_API_KEY" => PUBLIC_KEY,
+        "HTTP_IDEMPOTENCY_KEY" => "idem-v3",
+        "HTTP_SEC_FETCH_SITE" => "same-origin",
+        "HTTP_SEC_FETCH_MODE" => "cors",
+        "HTTP_SEC_FETCH_DEST" => "empty",
+        "HTTP_SEC_CH_UA" => "\"Chromium\";v=\"130\"",
+        "HTTP_SEC_CH_UA_MOBILE" => "?0",
+        "HTTP_SEC_CH_UA_PLATFORM" => "\"macOS\""
+      )
+
+      assert_equal 409, res.status
+      assert_equal "1", res.headers["retry-after"]
+      assert_equal "req-409", res.headers["x-request-id"]
+      sent = api.requests.first
+
+      assert_equal "idem-v3", sent.header("idempotency-key")
+      assert_equal "same-origin", sent.header("sec-fetch-site")
+      assert_equal "cors", sent.header("sec-fetch-mode")
+      assert_equal "empty", sent.header("sec-fetch-dest")
+      assert_equal "\"Chromium\";v=\"130\"", sent.header("sec-ch-ua")
+      assert_equal "?0", sent.header("sec-ch-ua-mobile")
+      assert_equal "\"macOS\"", sent.header("sec-ch-ua-platform")
+    end
+  end
+
+  def test_handles_configured_cross_origin_cors_preflight_and_post
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      proxy = Fingerly::Proxy.new(
+        proxy_key: PROXY_KEY, path: PATH, allowed_origins: ["https://app.example"],
+        upstream: api.origin, allow_insecure_loopback: true, logger: QUIET,
+        client_ip: ->(_r) { "203.0.113.7" }
+      )
+      mock = Rack::MockRequest.new(Rack::Lint.new(proxy))
+
+      pre = mock.options(PATH, "HTTP_ORIGIN" => "https://app.example")
+
+      assert_equal 204, pre.status
+      assert_equal "https://app.example", pre.headers["access-control-allow-origin"]
+      assert_includes pre.headers["access-control-allow-headers"], "x-fingerly-sdk-platform"
+      assert_includes pre.headers["access-control-expose-headers"], "retry-after"
+
+      forbidden = mock.options(PATH, "HTTP_ORIGIN" => "https://evil.example")
+
+      assert_equal 403, forbidden.status
+
+      accepted = mock.post(
+        PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://app.example"
+      )
+
+      assert_equal 200, accepted.status
+      assert_equal "https://app.example", accepted.headers["access-control-allow-origin"]
+    end
+  end
+
   private
 
   def post_with_client_ip(api, callback, **env)
     proxy = Fingerly::Proxy.new(proxy_key: PROXY_KEY, path: PATH, upstream: api.origin,
-                                logger: QUIET, client_ip: callback)
-    Rack::MockRequest.new(Rack::Lint.new(proxy))
-                     .post(PATH, input: "{}", "HTTP_X_API_KEY" => PUBLIC_KEY, **env)
+                                allow_insecure_loopback: true, logger: QUIET, client_ip: callback)
+    headers = { "HTTP_X_API_KEY" => PUBLIC_KEY, "HTTP_ORIGIN" => "https://shop.example" }.merge(env)
+    Rack::MockRequest.new(Rack::Lint.new(proxy)).post(PATH, input: "{}", **headers)
   end
 
   def assert_gateway_error(status, text, response, label = nil)
@@ -762,7 +934,8 @@ class ProxyTest < Minitest::Test
     Fingerly::Proxy.new(
       app,
       proxy_key: PROXY_KEY, path: path, upstream: upstream, logger: QUIET,
-      max_body_bytes: max_body_bytes, client_ip: ->(_r) { "203.0.113.7" }
+      allow_insecure_loopback: true, max_body_bytes: max_body_bytes,
+      client_ip: ->(_r) { "203.0.113.7" }
     )
   end
 
@@ -771,6 +944,8 @@ class ProxyTest < Minitest::Test
   end
 
   def post(api, path, body, max: 1 << 20, **env)
-    request(api, max: max).post(path, input: body, **env)
+    merged = { "HTTP_ORIGIN" => "https://shop.example" }.merge(env)
+    merged.delete("HTTP_ORIGIN") if merged["HTTP_ORIGIN"].nil?
+    request(api, max: max).post(path, input: body, **merged)
   end
 end

@@ -5,8 +5,38 @@ require "time"
 module Fingerly
   # One signal group that contributed to an event's suspect score.
   class EventTrigger
-    # @return [String, nil] the signal group, such as +vpn+ or +bot+
+    SIGNAL_ATTESTATION_FAILED = "attestation_failed"
+    SIGNAL_ATTESTATION_MISSING = "attestation_missing"
+    SIGNAL_ATTESTATION_DOWNGRADE = "attestation_downgrade"
+    SIGNAL_DEVICE_INCONSISTENT = "device_inconsistent"
+    SIGNAL_REPORT_INCOMPLETE = "report_incomplete"
+    SIGNAL_PROBE_ERRORS = "probe_errors"
+    SIGNAL_FETCH_METADATA_MISSING = "fetch_metadata_missing"
+    SIGNAL_WEB_TICKET_MISSING = "web_ticket_missing"
+    SIGNAL_WEB_TICKET_INVALID = "web_ticket_invalid"
+    SIGNAL_TAMPERING = "tampering"
+    SIGNAL_BROWSER_TAMPERING = "browser_tampering"
+    SIGNAL_CUSTOM_ROOT_CA = "custom_root_ca"
+    SIGNAL_SECONDARY_USER_PROFILE = "secondary_user_profile"
+
+    V3_SIGNALS = [
+      SIGNAL_ATTESTATION_FAILED,
+      SIGNAL_ATTESTATION_DOWNGRADE,
+      SIGNAL_DEVICE_INCONSISTENT,
+      SIGNAL_REPORT_INCOMPLETE,
+      SIGNAL_PROBE_ERRORS,
+      SIGNAL_FETCH_METADATA_MISSING,
+      SIGNAL_WEB_TICKET_MISSING,
+      SIGNAL_WEB_TICKET_INVALID,
+      SIGNAL_TAMPERING,
+      SIGNAL_CUSTOM_ROOT_CA,
+      SIGNAL_SECONDARY_USER_PROFILE
+    ].freeze
+
+    # @return [String, nil] the signal or signal group, such as +vpn+ or +attestation_failed+
     attr_reader :signal
+    # @return [String, nil] optional group identifier when returned alongside a raw signal
+    attr_reader :group
     # @return [Integer] the group's combined weight in this score
     attr_reader :weight
     # @return [String, nil] +low+, +medium+ or +high+
@@ -15,6 +45,7 @@ module Fingerly
     # @api private
     def initialize(payload)
       @signal = payload["signal"]
+      @group = payload["group"]
       @weight = payload["weight"] || 0
       @confidence = payload["confidence"]
       freeze
@@ -33,11 +64,12 @@ module Fingerly
   # the distinction at the call site.
   class Event
     # Fields copied straight from the response, in the order the API documents
-    # them. Anything not listed stays reachable through {#raw}. +project_id+
-    # is the UUID string of the Fingerly project the event belongs to, and nil
-    # when an older server does not send it.
+    # them. Anything not listed stays reachable through {#raw}. +visitor_id+ is
+    # +""+ when the submission was unidentifiable, +reason+ explains why
+    # enrichment did not happen when unavailable, and +project_id+ is the UUID
+    # string of the Fingerly project the event belongs to (nil on older servers).
     STRING_FIELDS = %w[
-      request_id project_id visitor_id state environment platform sdk_platform
+      request_id project_id visitor_id state reason environment platform sdk_platform
       sdk_version origin url_host url_path tag ip_network country_code
       country_name asn asn_name anonymity_network agent agent_version os
       device_kind visitor_kind suspect_level
@@ -62,10 +94,17 @@ module Fingerly
     #   API adds after this SDK was released needs no upgrade
     attr_reader :raw
 
+    # @param lenient_time [Boolean] keeps a missing or malformed
+    #   +occurred_at+ as nil rather than raising, for +events.verify+, which
+    #   answers +too_old+ for it
     # @api private
-    def initialize(payload)
+    def initialize(payload, lenient_time: false)
       STRING_FIELDS.each { |name| instance_variable_set(:"@#{name}", payload[name]) }
-      @occurred_at = Models.parse_instant(payload["occurred_at"])
+      @occurred_at = if lenient_time
+                       Models.rfc3339(payload["occurred_at"])
+                     else
+                       Models.parse_instant(payload["occurred_at"])
+                     end
       @suspect_score = payload["suspect_score"]
       @has_document = payload["has_document"] ? true : false
       @triggers = Array(payload["triggers"]).map { |item| EventTrigger.new(item) }.freeze
@@ -125,6 +164,129 @@ module Fingerly
     end
   end
 
+  # The first consumption of an event, from +fingerly.events.consume+.
+  class EventConsumption
+    # @return [String, nil] the consumed event's request id
+    attr_reader :request_id
+    # @return [String, nil] when it was consumed, as the API sent it (RFC 3339)
+    attr_reader :consumed_at
+    # @return [Boolean] true for the call that consumed the event
+    attr_reader :first
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    def initialize(payload)
+      @request_id = payload["request_id"].is_a?(String) ? payload["request_id"] : nil
+      @consumed_at = payload["consumed_at"].is_a?(String) ? payload["consumed_at"] : nil
+      @first = payload["first"] == true
+      @raw = payload
+      freeze
+    end
+
+    def first? = first
+
+    def inspect
+      "#<Fingerly::EventConsumption request_id=#{request_id.inspect} first=#{first}>"
+    end
+  end
+
+  # The answer of +fingerly.events.verify+.
+  #
+  # {#reason} is +""+ when {#ok?}, and otherwise the first check that failed,
+  # as one of the wire strings below. The score is not checked: apply your own
+  # policy to {#event} after {#ok?}.
+  class EventVerification
+    NOT_FOUND = "not_found"
+    TOO_OLD = "too_old"
+    TAG_MISMATCH = "tag_mismatch"
+    UNIDENTIFIABLE = "unidentifiable"
+    UNSCORED = "unscored"
+    ALREADY_CONSUMED = "already_consumed"
+
+    # Every reason, in the order the checks run.
+    REASONS = [NOT_FOUND, TOO_OLD, TAG_MISMATCH, UNIDENTIFIABLE, UNSCORED, ALREADY_CONSUMED].freeze
+
+    # @return [Boolean] whether every check passed
+    attr_reader :ok
+    # @return [String] the failed check, or +""+ when {#ok}
+    attr_reader :reason
+    # @return [Event, nil] the event read; nil only for +not_found+
+    attr_reader :event
+
+    # @api private
+    def initialize(reason:, event:)
+      @ok = reason.empty?
+      @reason = reason
+      @event = event
+      freeze
+    end
+
+    def ok? = ok
+
+    def inspect
+      "#<Fingerly::EventVerification ok=#{ok} reason=#{reason.inspect}>"
+    end
+  end
+
+  # What Apple holds for the device behind an event, from
+  # +fingerly.device_check.query+. The bits mean what you decide; Fingerly
+  # never reads them.
+  class DeviceCheckBits
+    # @return [Boolean] false when Apple holds no bits for the device yet;
+    #   both bits are then false
+    attr_reader :found
+    # @return [Boolean] the first bit
+    attr_reader :bit0
+    # @return [Boolean] the second bit
+    attr_reader :bit1
+    # @return [String, nil] when the bits last changed, as +YYYY-MM+; nil when
+    #   Apple holds no bits
+    attr_reader :last_update
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    def initialize(payload)
+      @found = payload["found"] == true
+      @bit0 = payload["bit0"] == true
+      @bit1 = payload["bit1"] == true
+      @last_update = payload["last_update"].is_a?(String) ? payload["last_update"] : nil
+      @raw = payload
+      freeze
+    end
+
+    def found? = found
+
+    def inspect
+      "#<Fingerly::DeviceCheckBits found=#{found} bit0=#{bit0} bit1=#{bit1}>"
+    end
+  end
+
+  # The bits Apple accepted, from +fingerly.device_check.write+.
+  class DeviceCheckWrite
+    # @return [Boolean, nil] the value set for the first bit; nil when the
+    #   write left it out
+    attr_reader :bit0
+    # @return [Boolean, nil] the value set for the second bit; nil when the
+    #   write left it out
+    attr_reader :bit1
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    def initialize(payload)
+      @bit0 = [true, false].include?(payload["bit0"]) ? payload["bit0"] : nil
+      @bit1 = [true, false].include?(payload["bit1"]) ? payload["bit1"] : nil
+      @raw = payload
+      freeze
+    end
+
+    def inspect
+      "#<Fingerly::DeviceCheckWrite bit0=#{bit0.inspect} bit1=#{bit1.inspect}>"
+    end
+  end
+
   # The envelope every webhook delivery shares.
   #
   # {#data} is left as a plain Hash, so a new event type needs no SDK upgrade.
@@ -178,6 +340,18 @@ module Fingerly
       Time.iso8601(value.to_s)
     rescue ArgumentError, TypeError
       raise Error, "Fingerly API returned a timestamp that is not RFC 3339"
+    end
+
+    RFC3339 = /\A\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})\z/
+
+    # A strict RFC 3339 date-time, or nil for anything else, a date alone
+    # included.
+    def rfc3339(value)
+      return nil unless value.is_a?(String) && value.match?(RFC3339)
+
+      Time.iso8601(value.upcase)
+    rescue ArgumentError
+      nil
     end
   end
 end

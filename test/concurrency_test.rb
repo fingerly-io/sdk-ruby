@@ -21,7 +21,8 @@ class ConcurrencyTest < Minitest::Test
 
   def test_requests_overlap_under_a_fiber_scheduler
     FakeAPI.run(slow_handler) do |api|
-      fingerly = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin)
+      fingerly = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin,
+                                      allow_insecure_loopback: true)
 
       elapsed = measure do
         Async do
@@ -39,7 +40,8 @@ class ConcurrencyTest < Minitest::Test
 
   def test_requests_overlap_across_threads
     FakeAPI.run(slow_handler) do |api|
-      fingerly = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin)
+      fingerly = Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin,
+                                      allow_insecure_loopback: true)
 
       elapsed = measure do
         CALLS.times.map { Thread.new { fingerly.events.get("r1") } }.each(&:join)
@@ -57,7 +59,7 @@ class ConcurrencyTest < Minitest::Test
     FakeAPI.run(slow_handler) do |api|
       built = Queue.new
       fingerly = Fingerly::Client.new(
-        secret_key: SECRET_KEY, endpoint: api.origin,
+        secret_key: SECRET_KEY, endpoint: api.origin, allow_insecure_loopback: true,
         configure_http: ->(_http) { built << :one }
       )
 
@@ -77,7 +79,7 @@ class ConcurrencyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
       built = Queue.new
       fingerly = Fingerly::Client.new(
-        secret_key: SECRET_KEY, endpoint: api.origin,
+        secret_key: SECRET_KEY, endpoint: api.origin, allow_insecure_loopback: true,
         configure_http: ->(_http) { built << :one }
       )
 
@@ -96,7 +98,7 @@ class ConcurrencyTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, EVENT_JSON)) do |api|
       built = Queue.new
       fingerly = Fingerly::Client.new(
-        secret_key: SECRET_KEY, endpoint: api.origin,
+        secret_key: SECRET_KEY, endpoint: api.origin, allow_insecure_loopback: true,
         configure_http: ->(_http) { built << :one }
       )
 
