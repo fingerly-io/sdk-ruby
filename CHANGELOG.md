@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Added named constants for the closed string sets the API sends, each a
   module of frozen wire strings with a frozen `ALL` array:
