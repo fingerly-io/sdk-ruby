@@ -30,6 +30,10 @@ module Fingerly
     #   written once per event
     attr_reader :device_check
 
+    # @return [Agents] reports of the requests your server served, answered
+    #   with what sent each one. {AgentSightings} uses it for you.
+    attr_reader :agents
+
     # @param secret_key [String] a server-only key,
     #   +fly_sk_{environment}_…+, whose prefix names the environment read
     # @param endpoint [String, nil] overrides the Fingerly API origin: a bare
@@ -63,6 +67,7 @@ module Fingerly
       )
       @events = Events.new(self)
       @device_check = DeviceCheck.new(self)
+      @agents = Agents.new(self)
       freeze
     end
 
@@ -146,6 +151,28 @@ module Fingerly
         nil
       )
       raise consume_error(result) unless (200..299).cover?(result.status)
+
+      decode(result.body)
+    end
+
+    # Performs one authenticated JSON POST and returns the decoded body.
+    #
+    # Never retried: the caller decides what a failure means.
+    #
+    # @raise [APIError] on any non-2xx response
+    # @api private
+    def post_json(path, body)
+      result = @transport.call(
+        Net::HTTP::Post, @base_path + path,
+        {
+          "x-api-key" => @secret_key,
+          "accept" => "application/json",
+          "content-type" => "application/json",
+          "user-agent" => USER_AGENT
+        }.freeze,
+        body
+      )
+      raise api_error(result) unless (200..299).cover?(result.status)
 
       decode(result.body)
     end
@@ -247,7 +274,8 @@ module Fingerly
         # tree.
         details: error.key?("details") ? redact_tree(error["details"]) : nil,
         request_id: redact(envelope["request_id"] || header(result, "x-request-id")),
-        retry_after: retry_after(header(result, "retry-after"))
+        retry_after: retry_after(header(result, "retry-after")),
+        rate_limit_scope: redact(header(result, "fingerly-ratelimit-scope"))
       )
     end
 
@@ -580,6 +608,68 @@ module Fingerly
     def path(request_id)
       "/events/#{Events.segment(request_id)}/device-check"
     end
+
+    def redacted_fields
+      []
+    end
+  end
+
+  # Reports the requests your server served, as raw input, and answers what
+  # sent each one. Reached as +fingerly.agents+.
+  #
+  # AI crawlers and fetchers that never run a page's JavaScript are seen only
+  # this way. {AgentSightings} batches, counts and remembers these answers for
+  # you; call this directly only to build that yourself.
+  class Agents
+    include Redacted
+
+    # The most requests one call may report.
+    MAX_SIGHTINGS = 200
+
+    # @api private
+    def initialize(client)
+      @client = client
+      freeze
+    end
+
+    # Reports up to {MAX_SIGHTINGS} requests in one call.
+    #
+    # Never retried: a call the server may have counted must not be counted
+    # twice.
+    #
+    # @param items [Array<AgentSightingInput>] the requests, answered in the
+    #   same order
+    # @return [AgentSightingsReport]
+    # @raise [ConfigurationError] for no items, more than {MAX_SIGHTINGS}, or
+    #   an item that is not an {AgentSightingInput}; nothing is sent
+    # @raise [APIError] on any non-2xx response: +429+ carries
+    #   {APIError#retry_after} and {APIError#rate_limit_scope}
+    # @raise [TimeoutError, ConnectionError] when no answer arrived
+    def report_sightings(items)
+      unless items.is_a?(Array) && (1..MAX_SIGHTINGS).cover?(items.size) &&
+             items.all?(AgentSightingInput)
+        raise ConfigurationError,
+              "items must be 1 to #{MAX_SIGHTINGS} Fingerly::AgentSightingInput values"
+      end
+
+      body = JSON.generate({ "items" => items.map { |item| Agents.wire(item) } })
+      AgentSightingsReport.new(@client.post_json("/agents/sightings", body))
+    end
+
+    # One item as JSON can carry it: a header that is not valid UTF-8 has its
+    # bad bytes replaced, since JSON strings are Unicode.
+    #
+    # @api private
+    def self.wire(item)
+      item.to_h.transform_values do |value|
+        next value unless value.is_a?(String)
+
+        text = value.dup.force_encoding(Encoding::UTF_8)
+        text.valid_encoding? ? text : text.scrub
+      end
+    end
+
+    private
 
     def redacted_fields
       []

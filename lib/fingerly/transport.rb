@@ -61,6 +61,9 @@ module Fingerly
 
     Result = Struct.new(:status, :headers, :body, keyword_init: true)
 
+    # How far one call got; see {TimeoutError#connected?}.
+    Progress = Struct.new(:connected)
+
     # @param origin [String] scheme and authority, without a trailing slash
     # @param timeout [Numeric] the deadline for one exchange, in seconds
     # @param configure_http [Proc, nil] receives the Net::HTTP before it starts
@@ -83,6 +86,9 @@ module Fingerly
     # @raise [TimeoutError] if the deadline passes at any point
     # @raise [ConnectionError] if the API cannot be reached
     def call(method, path, headers, body = nil)
+      # Whether a connection was open when time ran out: a timeout before one
+      # was sent nothing, and a caller that must never send twice can retry it.
+      progress = Progress.new(false)
       request = method.new(path, headers)
       request.body = body if body
       # Net::HTTP's own retry would resend on a connection error; reuse is
@@ -93,14 +99,17 @@ module Fingerly
       # One budget for the whole call, so reopening a closed connection cannot
       # quietly buy a second timeout's worth of time.
       Timeout.timeout(@timeout, DeadlineExceeded) do
-        perform(request, deadline: now + @timeout, idempotent: idempotent)
+        perform(request, deadline: now + @timeout, idempotent: idempotent, progress: progress)
       end
     rescue DeadlineExceeded
       # perform has already discarded the interrupted connection.
-      raise TimeoutError, "The Fingerly request timed out"
+      raise TimeoutError.new("The Fingerly request timed out", connected: progress.connected)
+    rescue Net::OpenTimeout => e
+      raise TimeoutError.new("The Fingerly request timed out (#{e.class})", connected: false)
     rescue Timeout::Error => e
-      # Net::OpenTimeout, ReadTimeout and WriteTimeout all derive from it.
-      raise TimeoutError, "The Fingerly request timed out (#{e.class})"
+      # Net::ReadTimeout and WriteTimeout derive from it.
+      raise TimeoutError.new("The Fingerly request timed out (#{e.class})",
+                             connected: progress.connected)
     rescue SocketError, IOError, SystemCallError, OpenSSL::OpenSSLError, Zlib::Error,
            Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Net::ProtocolError => e
       # Every network failure arrives as the SDK's own error, never as a raw
@@ -206,10 +215,10 @@ module Fingerly
       [["origin", "#{@uri.scheme}://#{@uri.host}:#{@uri.port}"], ["timeout", @timeout]]
     end
 
-    def perform(request, deadline:, idempotent:)
+    def perform(request, deadline:, idempotent:, progress:)
       entry, reused = connection
       begin
-        result = exchange(entry.http, request, deadline)
+        result = exchange(entry.http, request, deadline, progress)
       rescue IOError, SystemCallError, Net::HTTPBadResponse
         discard(entry.http)
         # A connection the other end closed while it was idle fails on its
@@ -221,7 +230,7 @@ module Fingerly
 
         entry = fresh
         begin
-          result = exchange(entry.http, request, deadline)
+          result = exchange(entry.http, request, deadline, progress)
         rescue Exception # rubocop:disable Lint/RescueException
           discard(entry.http)
           raise
@@ -236,9 +245,10 @@ module Fingerly
       result
     end
 
-    def exchange(http, request, deadline)
+    def exchange(http, request, deadline, progress)
       apply_timeouts(http, deadline)
       http.start unless http.started?
+      progress.connected = true
       apply_timeouts(http, deadline)
 
       # The result is captured rather than returned from the block. Net::HTTP
@@ -276,10 +286,10 @@ module Fingerly
       raise Error, "The Fingerly API returned more than #{MAX_BODY_BYTES} bytes"
     end
 
-    # @raise [TimeoutError] when nothing is left of the deadline
+    # @raise [DeadlineExceeded] when nothing is left of the deadline
     def apply_timeouts(http, deadline)
       left = deadline - now
-      raise TimeoutError, "The Fingerly request timed out" if left <= 0
+      raise DeadlineExceeded if left <= 0
 
       http.open_timeout = left
       http.read_timeout = left

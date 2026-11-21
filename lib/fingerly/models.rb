@@ -404,6 +404,124 @@ module Fingerly
     end
   end
 
+  # One request your server served, as raw input for
+  # +fingerly.agents.report_sightings+. Nothing here is judged by the SDK: the
+  # server decides what sent it.
+  class AgentSightingInput
+    # @return [String] the +User-Agent+ header as received, or +""+
+    attr_reader :user_agent
+    # @return [String] the client's one IP literal, from a trusted source
+    attr_reader :client_ip
+    # @return [String, nil] the +Host+ the request was sent to
+    attr_reader :host
+    # @return [String, nil] the request method, sent as +method+
+    attr_reader :request_method
+    # @return [String, nil] the +Signature+ header
+    attr_reader :signature
+    # @return [String, nil] the +Signature-Input+ header
+    attr_reader :signature_input
+    # @return [String, nil] the +Signature-Agent+ header
+    attr_reader :signature_agent
+    # @return [Integer, nil] how many times this request was served since it
+    #   was last reported, this one included
+    attr_reader :count
+
+    def initialize(user_agent:, client_ip:, host: nil, request_method: nil, signature: nil,
+                   signature_input: nil, signature_agent: nil, count: nil)
+      @user_agent = user_agent
+      @client_ip = client_ip
+      @host = host
+      @request_method = request_method
+      @signature = signature
+      @signature_input = signature_input
+      @signature_agent = signature_agent
+      @count = count
+      freeze
+    end
+
+    # @return [Hash{String=>Object}] the item as the API reads it
+    def to_h
+      {
+        "user_agent" => user_agent, "client_ip" => client_ip, "host" => host,
+        "method" => request_method, "signature" => signature,
+        "signature_input" => signature_input, "signature_agent" => signature_agent,
+        "count" => count
+      }.compact
+    end
+
+    # The fields are a visitor's request; none of them is printed.
+    def inspect
+      "#<Fingerly::AgentSightingInput count=#{count.inspect}>"
+    end
+  end
+
+  # What the server said sent one reported request.
+  #
+  # {AgentSightings::UNKNOWN} is the one answer that did not come from the
+  # server: nothing is known yet, so serve the request as usual.
+  class AgentSighting
+    # @return [Integer] seconds this answer may be reused for the same user
+    #   agent, address and +Signature-Agent+; 0 for a signed request
+    attr_reader :ttl
+    # @return [String] +human+, +ai_bot+, +automation+ or +search_crawler+;
+    #   see {VisitorKind}. The API can add values, so keep an +else+ branch.
+    attr_reader :visitor_kind
+    # @return [String, nil] the agent's name where the server knows it, such
+    #   as +GPTBot+ or +Googlebot+
+    attr_reader :agent
+    # @return [AiAgent, nil] present when {#visitor_kind} is
+    #   {VisitorKind::AI_BOT}
+    attr_reader :ai
+
+    # @api private
+    def initialize(payload)
+      ttl = payload["ttl"]
+      @ttl = ttl.is_a?(Integer) && ttl.positive? ? ttl : 0
+      kind = payload["visitor_kind"]
+      @visitor_kind = kind.is_a?(String) ? kind : ""
+      @agent = payload["agent"].is_a?(String) ? payload["agent"] : nil
+      @ai = payload["ai"].is_a?(Hash) ? AiAgent.new(payload["ai"]) : nil
+      freeze
+    end
+
+    def inspect
+      "#<Fingerly::AgentSighting visitor_kind=#{visitor_kind.inspect} agent=#{agent.inspect} " \
+        "ttl=#{ttl}>"
+    end
+  end
+
+  # The server's answer to +fingerly.agents.report_sightings+.
+  class AgentSightingsReport
+    # @return [String] names the classification rules; when it changes, every
+    #   remembered answer is stale
+    attr_reader :rules_version
+    # @return [Array<AgentSighting>] one answer per reported request, in the
+    #   same order
+    attr_reader :items
+    # @return [Hash] the response body exactly as it arrived
+    attr_reader :raw
+
+    # @api private
+    # @raise [Error] if the body is not an answer of this shape
+    def initialize(payload)
+      items = payload["items"]
+      version = payload["rules_version"]
+      unless items.is_a?(Array) && version.is_a?(String) && items.all?(Hash)
+        raise Error, "Fingerly API returned an agent sightings answer of another shape"
+      end
+
+      @rules_version = version
+      @items = items.map { |item| AgentSighting.new(item) }.freeze
+      @raw = payload
+      freeze
+    end
+
+    def inspect
+      "#<Fingerly::AgentSightingsReport rules_version=#{rules_version.inspect} " \
+        "items=#{items.size}>"
+    end
+  end
+
   # Shared decoding helpers.
   #
   # @api private

@@ -49,13 +49,24 @@ module Fingerly
     #   itself.
     attr_reader :retry_after
 
+    # @return [String, nil] which limit refused the call, from the
+    #   +Fingerly-RateLimit-Scope+ header of a 429, such as +daily+ for an
+    #   organization's daily allowance; see {RATE_LIMIT_SCOPE_DAILY}
+    attr_reader :rate_limit_scope
+
+    # The +Fingerly-RateLimit-Scope+ of a daily allowance: it resets at the
+    # next UTC day.
+    RATE_LIMIT_SCOPE_DAILY = "daily"
+
     # @api private
-    def initialize(status:, code: nil, details: nil, request_id: nil, retry_after: nil)
+    def initialize(status:, code: nil, details: nil, request_id: nil, retry_after: nil,
+                   rate_limit_scope: nil)
       @status = status
       @code = code
       @details = details
       @request_id = request_id
       @retry_after = retry_after
+      @rate_limit_scope = rate_limit_scope
       described = "Fingerly API returned HTTP #{status}"
       super(code ? "#{described} (#{code})" : described)
     end
@@ -187,7 +198,20 @@ module Fingerly
   # Raised when a request does not finish within its time limit.
   #
   # The deadline covers reading the response body, not only the headers.
-  class TimeoutError < Error; end
+  class TimeoutError < Error
+    # @api private
+    def initialize(message = "The Fingerly request timed out", connected: true)
+      super(message)
+      @connected = connected
+    end
+
+    # Whether a connection to the API was open when the time ran out. When it
+    # was, the request may have reached the server, so sending it again could
+    # do its work twice; when it was not, nothing was sent.
+    #
+    # @return [Boolean]
+    def connected? = @connected
+  end
 
   # Raised when the Fingerly API could not be reached at all.
   #

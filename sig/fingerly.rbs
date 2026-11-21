@@ -20,13 +20,17 @@ module Fingerly
     attr_reader details: untyped
     attr_reader request_id: String?
     attr_reader retry_after: Integer?
+    attr_reader rate_limit_scope: String?
+
+    RATE_LIMIT_SCOPE_DAILY: String
 
     def initialize: (
       status: Integer,
       ?code: String?,
       ?details: untyped,
       ?request_id: String?,
-      ?retry_after: Integer?
+      ?retry_after: Integer?,
+      ?rate_limit_scope: String?
     ) -> void
     def event_not_found?: () -> bool
     def pending?: () -> bool
@@ -69,6 +73,8 @@ module Fingerly
   end
 
   class TimeoutError < Error
+    def initialize: (?String message, ?connected: bool) -> void
+    def connected?: () -> bool
   end
 
   class ConnectionError < Error
@@ -464,6 +470,7 @@ module Fingerly
 
     attr_reader events: Events
     attr_reader device_check: DeviceCheck
+    attr_reader agents: Agents
 
     def initialize: (
       secret_key: String,
@@ -477,8 +484,59 @@ module Fingerly
     def get: (String) -> Hash[String, untyped]
     def spend_device_check: (untyped, String, String?) -> Hash[String, untyped]
     def post_consume: (String) -> Hash[String, untyped]
+    def post_json: (String, String) -> Hash[String, untyped]
 
     def inspect: () -> String
+  end
+
+  class Agents
+    MAX_SIGHTINGS: Integer
+
+    def initialize: (Client) -> void
+    def report_sightings: (Array[AgentSightingInput]) -> AgentSightingsReport
+    def self.wire: (AgentSightingInput) -> Hash[String, untyped]
+
+    def inspect: () -> String
+  end
+
+  class AgentSightingInput
+    attr_reader user_agent: String
+    attr_reader client_ip: String
+    attr_reader host: String?
+    attr_reader request_method: String?
+    attr_reader signature: String?
+    attr_reader signature_input: String?
+    attr_reader signature_agent: String?
+    attr_reader count: Integer?
+
+    def initialize: (
+      user_agent: String,
+      client_ip: String,
+      ?host: String?,
+      ?request_method: String?,
+      ?signature: String?,
+      ?signature_input: String?,
+      ?signature_agent: String?,
+      ?count: Integer?
+    ) -> void
+    def to_h: () -> Hash[String, untyped]
+  end
+
+  class AgentSighting
+    attr_reader ttl: Integer
+    attr_reader visitor_kind: String
+    attr_reader agent: String?
+    attr_reader ai: AiAgent?
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class AgentSightingsReport
+    attr_reader rules_version: String
+    attr_reader items: Array[AgentSighting]
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
   end
 
   class DeviceCheck
