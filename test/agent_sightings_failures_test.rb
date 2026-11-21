@@ -38,8 +38,10 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
-  def test_any_other_refusal_is_dropped_like_an_invalid_batch
-    [400, 404, 413].each do |code|
+  # Only 503 is retried: a 500, 502 or 504 may have counted the batch.
+  def test_any_other_status_is_dropped_and_logged_once_a_minute
+    [400, 404, 413, 500, 502, 504].each do |code|
+      @logger.lines.clear
       FakeAPI.run(status(code)) do |api|
         fingerly = sightings(api)
         fingerly.report(env)
@@ -48,6 +50,8 @@ class AgentSightingsFailuresTest < Minitest::Test
         fingerly.flush
 
         assert_equal 1, api.requests.size, code.to_s
+        assert_equal 1, @logger.lines.size, code.to_s
+        assert_includes @logger.lines.first, code.to_s
       end
     end
   end
@@ -112,7 +116,7 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
-  def test_a_refused_key_drops_the_batch_stops_for_a_minute_and_logs_once
+  def test_a_refused_key_drops_the_batch_stops_for_a_minute_and_logs_once_a_minute
     [401, 403].each do |code|
       @logger.lines.clear
       FakeAPI.run(status(code)) do |api|
@@ -124,13 +128,14 @@ class AgentSightingsFailuresTest < Minitest::Test
         fingerly.flush
 
         assert_equal 1, api.requests.size, code.to_s
+        assert_equal 1, @logger.lines.size
         @clock.advance(1)
         fingerly.flush
 
-        # "a" was dropped; only "b" goes, and the second refusal is not logged.
+        # "a" was dropped; only "b" goes, a minute later, and is logged again.
         assert_equal [["a"], ["b"]], sent_agents(api)
-        assert_equal 1, @logger.lines.size
-        refute_includes @logger.lines.first, SightingsHelpers::SECRET_KEY
+        assert_equal 2, @logger.lines.size
+        @logger.lines.each { |line| refute_includes line, SightingsHelpers::SECRET_KEY }
       end
     end
   end
@@ -163,7 +168,7 @@ class AgentSightingsFailuresTest < Minitest::Test
   end
 
   def test_the_backoff_stops_growing_at_a_minute_and_a_success_resets_it
-    FakeAPI.run(status(500)) do |api|
+    FakeAPI.run(status(503)) do |api|
       fingerly = sightings(api)
       fingerly.report(env)
       [1, 2, 4, 8, 16, 32, 60, 60].each do |wait|
@@ -238,9 +243,8 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
-  # A kept batch goes back in front of what arrived meanwhile; with the
-  # buffer full, what no longer fits is counted as dropped.
-  def test_a_kept_batch_that_no_longer_fits_is_counted
+  # The bound counts the batch in flight, so a kept batch always fits back.
+  def test_the_buffer_bound_counts_the_batch_in_flight
     release = Queue.new
     handler = lambda do |_req, res|
       release.pop
@@ -249,14 +253,38 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
     FakeAPI.run(handler) do |api|
       fingerly = sightings(api)
+      buffer = fingerly.instance_variable_get(:@buffer)
       200.times { |i| fingerly.report(env(user_agent: "old-#{i}")) }
 
       assert(eventually? { api.requests.size == 1 })
-      # 1000 newer keys fill the buffer while the first 200 are in flight.
       1000.times { |i| fingerly.report(env(user_agent: "new-#{i}")) }
+
+      # 200 in flight and 800 pending fill it.
+      assert_equal 200, fingerly.dropped_count
       release << true
 
-      assert(eventually? { fingerly.dropped_count == 200 })
+      assert(eventually? { buffer.size == 1000 })
+      assert_equal 200, fingerly.dropped_count
+      assert_equal "old-0", buffer.instance_variable_get(:@items).values.first.fields[:user_agent]
+    end
+  end
+
+  # A kept batch is as old as when it was first seen, so the two second rule
+  # sends it as soon as the backoff ends, without an explicit flush.
+  def test_a_kept_batch_keeps_its_first_seen_time
+    FakeAPI.run(status(503)) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env)
+      @clock.advance(1.5)
+      fingerly.flush
+      api.handler = answering
+      fingerly.report(env(user_agent: "newer"))
+      @clock.advance(1)
+
+      assert(eventually? { api.requests.size == 2 })
+      sent = items_of(api.requests.last).map { |item| item["user_agent"] }
+
+      assert_equal [GPTBOT, "newer"], sent
     end
   end
 

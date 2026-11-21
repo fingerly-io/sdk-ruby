@@ -63,11 +63,12 @@ module Fingerly
     # Reports waiting to be sent, oldest first, bounded by item count.
     #
     # Unsigned sightings of one key fold into one item with a running count;
-    # signed ones are never folded, each is its own item.
+    # signed ones are never folded, each is its own item. The bound counts
+    # the items of the batch in flight too, so a batch put back always fits.
     #
     # @api private
     class PendingBuffer
-      # @return [Integer] the estimated size of the pending items as JSON
+      # @return [Integer] the byte length of the pending items' fields
       attr_reader :bytes
 
       def initialize(max_items, max_count)
@@ -75,6 +76,8 @@ module Fingerly
         @max_count = max_count
         @items = {}
         @bytes = 0
+        # The ids of the items taken and neither settled nor restored yet.
+        @in_flight = {}
         @sequence = 0
       end
 
@@ -87,7 +90,7 @@ module Fingerly
             return :folded
           end
         end
-        return :dropped if @items.size >= @max_items
+        return :dropped if @items.size + @in_flight.size >= @max_items
 
         id = sighting.signed ? "#{sighting.key}/#{@sequence += 1}" : sighting.key
         insert(Pending.new(id, sighting.key, sighting.signed, sighting.fields, 1, now,
@@ -107,35 +110,34 @@ module Fingerly
           batch << item
           size += item.bytes
         end
-        batch.each { |item| @items.delete(item.id) }
+        batch.each do |item|
+          @items.delete(item.id)
+          @in_flight[item.id] = true
+        end
         @bytes -= size
         batch
       end
 
+      # Forgets a batch that was delivered or dropped. Settling a batch twice,
+      # or one already restored, changes nothing.
+      def settle(batch)
+        batch.each { |item| @in_flight.delete(item.id) }
+      end
+
       # Puts a batch that was not delivered back in front of everything
-      # newer. A key counted again meanwhile takes the batch's count too.
-      #
-      # @return [Integer] items lost because the buffer was full
+      # newer, each item keeping when it was first seen. A key counted again
+      # meanwhile adds its count to the batch's item.
       def restore(batch)
+        settle(batch)
         newer = @items
         @items = {}
         @bytes = 0
-        room = @max_items - newer.size
-        lost = 0
         batch.each do |item|
           later = item.signed ? nil : newer.delete(item.id)
-          if later
-            item.hits = [item.hits + later.hits, @max_count].min
-          elsif room <= 0
-            lost += 1
-            next
-          else
-            room -= 1
-          end
+          item.hits = [item.hits + later.hits, @max_count].min if later
           insert(item)
         end
         newer.each_value { |item| insert(item) }
-        lost
       end
 
       def size = @items.size
@@ -151,6 +153,7 @@ module Fingerly
       def clear
         @items.clear
         @bytes = 0
+        @in_flight.clear
       end
 
       private

@@ -555,8 +555,7 @@ module Fingerly
     RATE_LIMIT_PAUSE: Integer
     BACKOFF_MIN: Integer
     BACKOFF_MAX: Integer
-    DROP_LOG_INTERVAL: Integer
-    ITEM_OVERHEAD: Integer
+    LOG_INTERVAL: Integer
     WELL_KNOWN_PATHS: Array[String]
 
     type request = Hash[String, untyped] | _HasEnv

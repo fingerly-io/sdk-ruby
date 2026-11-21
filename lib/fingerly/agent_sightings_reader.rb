@@ -86,10 +86,10 @@ module Fingerly
     #
     # @api private
     class Reader
+      # @param log [#call] takes a line to log at most once a minute
       def initialize(client_ip, log)
         @client_ip = client_ip
         @log = log
-        @logged = false
       end
 
       # @return [Sighting, nil] nil when the request is not reported at all:
@@ -108,18 +108,22 @@ module Fingerly
         signature_input = header(env, "HTTP_SIGNATURE_INPUT")
         signature_agent = header(env, "HTTP_SIGNATURE_AGENT")
         signed = !signature.nil? && !signature_input.nil?
+        # Host goes as received: the server does not bound it.
+        host = env["HTTP_HOST"]
         fields = {
-          user_agent: user_agent, client_ip: ip, host: header(env, "HTTP_HOST"),
+          user_agent: user_agent, client_ip: ip,
+          host: host.is_a?(String) && !host.empty? ? host : nil,
           request_method: env["REQUEST_METHOD"].to_s, signature: signature,
           signature_input: signature_input, signature_agent: signature_agent
         }.compact
         Sighting.new(Key.digest(user_agent, ip, signature_agent.to_s, signed), signed, fields,
-                     ITEM_OVERHEAD + fields.sum { |_name, value| value.bytesize })
+                     fields.sum { |_name, value| value.bytesize })
       end
 
       private
 
-      # A header as received, or nil when absent, empty or over the limit.
+      # A Web Bot Auth header as received, or nil when absent, empty or over
+      # the limit.
       def header(env, name)
         value = env[name]
         return nil unless value.is_a?(String) && !value.empty?
@@ -136,12 +140,10 @@ module Fingerly
         end
         ip = Key.canonical_ip(returned)
         return ip if ip
-        return nil if @logged
 
-        @logged = true
         shown = returned.is_a?(Exception) ? "raised" : "returned"
         @log.call("fingerly agent sightings: client_ip #{shown} #{returned.class}, not one IP " \
-                  "address; such requests are not reported (logged once)")
+                  "address; such requests are not reported")
         nil
       end
     end

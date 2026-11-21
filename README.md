@@ -660,14 +660,14 @@ Rack middleware can call `SIGHTINGS.report(env)` itself after its response.
 
 | Rule | Behaviour |
 | --- | --- |
-| Answers remembered | At most `capacity:` (4096 by default, 65536 at most), least recently used dropped first. A few hundred bytes each: about 1.5 MB at the default. Each expires after the `ttl` the server gave it; a signed request is never remembered, and a new `rules_version` drops them all. |
-| Pending reports | At most 1000. Repeats of one request fold into one item with a count, signed requests excepted. When full, a new request is not reported and stays `UNKNOWN`; `dropped_count` counts them. |
-| Flushing | One background thread per process sends up to 200 items when 200 are pending, when they reach 64 KiB, or 2 seconds after the oldest, one flush at a time, each within 5 seconds. A forked worker starts its own thread and reports only its own requests. |
-| `429` | The batch is kept and nothing is sent until `Retry-After` has passed. |
-| `401` / `403` | The batch is dropped, nothing is sent for 60 seconds, and the refused key is logged once. |
-| `5xx`, or no connection | The batch is kept and sent again after 1, 2, 4 and up to 60 seconds. |
+| Answers remembered | At most `capacity:` (4096 by default; a larger value than 65536 is read as 65536), least recently used dropped first. A few hundred bytes each: about 1.5 MB at the default. Each expires after the `ttl` the server gave it; a signed request is never remembered, and a new `rules_version` drops them all. |
+| Pending reports | At most 1000, the batch being sent included. Repeats of one request fold into one item with a count, signed requests excepted. When full, a new request is not reported and stays `UNKNOWN`; `dropped_count` counts them. |
+| Flushing | One background thread per process sends up to 200 items when 200 are pending, when their fields reach 64 KiB, or 2 seconds after the oldest, one flush at a time, each within 5 seconds. A forked worker starts its own thread and reports only its own requests. |
+| `429` | The batch is kept and nothing is sent until `Retry-After` has passed, or the next UTC day for the daily allowance. |
+| `401` / `403` | The batch is dropped, nothing is sent for 60 seconds, and the refused key is logged at most once a minute. |
+| `503`, or no answer at all | The batch is kept, as old as when it was first seen, and sent again after 1, 2, 4 and up to 60 seconds. |
 | Timed out after sending | The batch is dropped, because the server may already have counted it. |
-| `422` or any other refusal | The batch is dropped and logged at most once a minute. |
+| Any other status, `422`, `500`, `502` and `504` included | The batch is dropped and logged at most once a minute. |
 
 In every case requests are served as usual and `lookup` keeps answering from
 memory or `UNKNOWN`. Log lines go to `logger:` when you pass one and to

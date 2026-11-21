@@ -29,8 +29,9 @@ module Fingerly
     include Redacted
 
     # The answer when nothing is known about a request: serve it as usual.
-    # Its +visitor_kind+ is +"unknown"+, which no server answer carries.
-    UNKNOWN = AgentSighting.new("ttl" => 0, "visitor_kind" => "unknown")
+    # Its +visitor_kind+ is +""+, which no server answer carries, so a check
+    # against a {VisitorKind} constant fails open.
+    UNKNOWN = AgentSighting.new("ttl" => 0, "visitor_kind" => "")
 
     DEFAULT_CAPACITY = 4096
     MAX_CAPACITY = 65_536
@@ -39,7 +40,7 @@ module Fingerly
     MAX_PENDING = 1000
     # A flush sends at most this many items...
     FLUSH_ITEMS = Agents::MAX_SIGHTINGS
-    # ...and at most about this many bytes; reaching either starts one.
+    # ...and at most this many bytes of fields; reaching either starts one.
     FLUSH_BYTES = 64 * 1024
     # Seconds after its oldest item that a buffer is flushed.
     FLUSH_AFTER = 2
@@ -56,13 +57,11 @@ module Fingerly
     AUTH_PAUSE = 60
     # Seconds reporting stops after a 429 that named no Retry-After.
     RATE_LIMIT_PAUSE = 60
-    # Backoff bounds, in seconds, after a 5xx or a transport error.
+    # Backoff bounds, in seconds, after a 503 or a transport error.
     BACKOFF_MIN = 1
     BACKOFF_MAX = 60
-    # Seconds between two log lines about a batch that was dropped.
-    DROP_LOG_INTERVAL = 60
-    # Estimated JSON bytes of one item beyond its values.
-    ITEM_OVERHEAD = 100
+    # Seconds between two log lines of one kind.
+    LOG_INTERVAL = 60
 
     # Paths reported whatever their content type.
     WELL_KNOWN_PATHS = %w[/robots.txt /llms.txt /llms-full.txt].freeze
@@ -76,8 +75,8 @@ module Fingerly
     #   infrastructure sets, or {ProxyRequest#peer_host}. Never use the
     #   left-most +X-Forwarded-For+ value: the visitor writes it. A request
     #   whose address cannot be resolved is not reported.
-    # @param capacity [Integer] the most answers remembered, at most
-    #   {MAX_CAPACITY}
+    # @param capacity [Integer] the most answers remembered; a value above
+    #   {MAX_CAPACITY} is read as {MAX_CAPACITY}
     # @param endpoint [String, nil] overrides the Fingerly API origin
     # @param allow_insecure_loopback [Boolean] lets +endpoint+ be plain +http+
     #   on a loopback host, for development and tests
@@ -89,8 +88,8 @@ module Fingerly
     def initialize(secret_key:, client_ip:, capacity: DEFAULT_CAPACITY, endpoint: nil,
                    allow_insecure_loopback: false, configure_http: nil, logger: nil, clock: nil)
       raise ConfigurationError, "client_ip is required" unless client_ip.respond_to?(:call)
-      unless capacity.is_a?(Integer) && capacity.between?(1, MAX_CAPACITY)
-        raise ConfigurationError, "capacity must be an Integer from 1 to #{MAX_CAPACITY}"
+      unless capacity.is_a?(Integer) && capacity.positive?
+        raise ConfigurationError, "capacity must be a positive Integer"
       end
       if logger && !logger.respond_to?(:warn)
         raise ConfigurationError, "logger must respond to warn"
@@ -99,22 +98,22 @@ module Fingerly
       @client = Client.new(secret_key: secret_key, endpoint: endpoint, timeout: FLUSH_DEADLINE,
                            configure_http: configure_http,
                            allow_insecure_loopback: allow_insecure_loopback)
-      @capacity = capacity
+      @capacity = [capacity, MAX_CAPACITY].min
       @logger = logger
-      @reader = Reader.new(client_ip, method(:log))
-      # Only answers and pending reports age by this clock; waits use the
-      # real one.
+      @reader = Reader.new(client_ip, ->(line) { log_limited(:client_ip, line) })
+      # Only answers, pending reports and log limits age by this clock; waits
+      # use the real one.
       @clock = clock || -> { AgentSightings.monotonic }
       @lock = Mutex.new
       @changed = ConditionVariable.new
-      @cache = AnswerCache.new(capacity)
+      @cache = AnswerCache.new(@capacity)
       @buffer = PendingBuffer.new(MAX_PENDING, MAX_COUNT)
       @dropped = 0
       @in_flight = false
       @paused_until = nil
       @backoff = nil
-      @auth_logged = false
-      @drop_logged_at = nil
+      @log_lock = Mutex.new
+      @logged_at = {}
       @closed = false
       @thread = nil
       @pid = Process.pid
@@ -185,8 +184,9 @@ module Fingerly
       nil
     end
 
-    # Stops the background thread after one last flush, unless reporting is
-    # paused. Later reports are ignored; {#lookup} keeps answering from memory.
+    # Stops the background thread, then flushes what is pending as {#flush}
+    # does, unless reporting is paused. Later reports are ignored; {#lookup}
+    # keeps answering from memory.
     #
     # @return [nil]
     def close
@@ -196,8 +196,7 @@ module Fingerly
         @thread
       end
       thread&.join(FLUSH_DEADLINE + 1)
-      flush_once if await_idle(AgentSightings.monotonic + FLUSH_DEADLINE + 1)
-      nil
+      flush
     rescue StandardError
       nil
     end
@@ -234,6 +233,8 @@ module Fingerly
       @buffer.clear
       @in_flight = false
       @thread = nil
+      @log_lock = Mutex.new
+      @logged_at = {}
     end
 
     def start_flusher
@@ -303,6 +304,8 @@ module Fingerly
         deliver(batch)
       ensure
         @lock.synchronize do
+          # A kept batch was restored already; this settles the others.
+          @buffer.settle(batch)
           @in_flight = false
           @changed.broadcast
         end
@@ -335,7 +338,6 @@ module Fingerly
         @cache.store(answer.rules_version,
                      batch.zip(answer.items).map { |item, sighting| [item.key, sighting] }, now)
         @backoff = nil
-        @auth_logged = false
       end
       :sent
     end
@@ -347,8 +349,10 @@ module Fingerly
         restore(batch)
       when 401, 403
         pause(AUTH_PAUSE)
-        log_auth(error.status)
-      when 500..599 then keep(batch)
+        log_limited(:auth, "fingerly agent sightings: the API refused the secret key " \
+                           "(#{error.status}); the batch was dropped and reporting stops for " \
+                           "#{AUTH_PAUSE} seconds")
+      when 503 then keep(batch)
       else drop("the API refused a report (#{error.status})")
       end
       :failed
@@ -373,31 +377,32 @@ module Fingerly
       :failed
     end
 
+    # The buffer's bound counts the batch in flight, so it always fits back.
     def restore(batch)
-      @lock.synchronize { @dropped += @buffer.restore(batch) }
+      @lock.synchronize { @buffer.restore(batch) }
     end
 
     def pause(seconds)
       @lock.synchronize { @paused_until = now + seconds }
     end
 
-    def log_auth(status)
-      return if @auth_logged
-
-      @auth_logged = true
-      log("fingerly agent sightings: the API refused the secret key (#{status}); reporting " \
-          "stops for #{AUTH_PAUSE} seconds at a time until it is accepted")
-    end
-
     # A batch that sending again cannot help, or that may already count.
     def drop(reason)
-      at = now
-      if @drop_logged_at.nil? || at - @drop_logged_at >= DROP_LOG_INTERVAL
-        @drop_logged_at = at
-        log("fingerly agent sightings: #{reason}; the batch was dropped " \
-            "(logged at most once a minute)")
-      end
+      log_limited(:drop, "fingerly agent sightings: #{reason}; the batch was dropped")
       :failed
+    end
+
+    # Logs a line at most once a minute for each kind. No line carries a
+    # request's fields.
+    def log_limited(kind, line)
+      at = now
+      due = @log_lock.synchronize do
+        last = @logged_at[kind]
+        next false if last && at - last < LOG_INTERVAL
+
+        @logged_at[kind] = at
+      end
+      log("#{line} (logged at most once a minute)") if due
     end
 
     def log(line)

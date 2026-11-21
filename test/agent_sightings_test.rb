@@ -8,7 +8,7 @@ class AgentSightingsTest < Minitest::Test
   def test_unknown_is_a_named_answer_that_fails_open
     unknown = Fingerly::AgentSightings::UNKNOWN
 
-    assert_equal "unknown", unknown.visitor_kind
+    assert_equal "", unknown.visitor_kind
     refute_includes Fingerly::VisitorKind::ALL, unknown.visitor_kind
     assert_equal 0, unknown.ttl
     assert_nil unknown.agent
@@ -95,11 +95,13 @@ class AgentSightingsTest < Minitest::Test
 
   def test_capacity_is_bounded
     FakeAPI.run(answering) do |api|
-      [0, 65_537, 1.5, nil].each do |capacity|
+      [0, -1, 1.5, nil].each do |capacity|
         assert_raises(Fingerly::ConfigurationError) { sightings(api, capacity: capacity) }
       end
 
       assert_equal 65_536, sightings(api, capacity: 65_536).capacity
+      # Above the hard maximum is read as the maximum.
+      assert_equal 65_536, sightings(api, capacity: 1_000_000).capacity
       assert_equal 4096, sightings(api).capacity
     end
   end
@@ -241,12 +243,17 @@ class AgentSightingsTest < Minitest::Test
   def test_flushes_on_its_own_at_sixty_four_kibibytes
     FakeAPI.run(answering) do |api|
       fingerly = sightings(api)
-      # About 4.2 KB each, so the 16th crosses 64 KiB.
+      # 4029 bytes of fields each: 16 are 64464 bytes, and the 17th crosses
+      # 65536.
       16.times { |i| fingerly.report(env(user_agent: format("%04d", i) + ("x" * 4000))) }
+      sleep 0.6
+
+      assert_empty api.requests
+      fingerly.report(env(user_agent: "0016#{"x" * 4000}"))
 
       assert eventually? { api.requests.size >= 1 }, "no flush at 64 KiB"
-      assert_operator items_of(api.requests.first).size, :<=, 16
-      assert_operator api.requests.first.body.bytesize, :<=, 64 * 1024
+      # The batch stops before the item that would pass 65536 bytes.
+      assert_equal 16, items_of(api.requests.first).size
     end
   end
 
@@ -318,14 +325,14 @@ class AgentSightingsTest < Minitest::Test
       assert_empty api.requests
       assert_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env(user_agent: long))
 
-      # A signature header over the limit is left out, and so is a long Host.
+      # A signature header over the limit is left out; Host goes as received.
       fingerly.report(env(signature: long, signature_input: "sig1=()", host: long))
       fingerly.report(env(user_agent: "second", signature: "x" * 4096, signature_agent: long))
       fingerly.flush
       sent = items_of(api.requests.first)
 
       refute sent[0].key?("signature")
-      refute sent[0].key?("host")
+      assert_equal long, sent[0]["host"]
       assert_equal "sig1=()", sent[0]["signature_input"]
       assert_equal 4096, sent[1]["signature"].bytesize
       refute sent[1].key?("signature_agent")
@@ -344,6 +351,22 @@ class AgentSightingsTest < Minitest::Test
 
       assert_empty api.requests
       assert_equal(1, @logger.lines.count { |line| line.include?("client_ip") })
+      # At most once a minute, and never the value itself.
+      @clock.advance(60)
+      fingerly.report(env(ip: "203.0.113.7, 10.0.0.1"))
+
+      assert_equal(2, @logger.lines.count { |line| line.include?("client_ip") })
+      @logger.lines.each { |line| refute_includes line, "203.0.113.7" }
+    end
+  end
+
+  def test_an_absent_host_is_left_out
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env.except("HTTP_HOST"))
+      fingerly.flush
+
+      refute items_of(api.requests.first).first.key?("host")
     end
   end
 
