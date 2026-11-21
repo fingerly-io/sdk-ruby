@@ -117,6 +117,15 @@ module Fingerly
       sec-ch-ua sec-ch-ua-mobile sec-ch-ua-platform
     ].freeze
 
+    # Web Bot Auth headers an AI agent's browser signs the request with,
+    # forwarded when present, header-safe and at most
+    # +MAX_SIGNATURE_HEADER_BYTES+. The API ignores a longer one, so it is
+    # dropped here rather than refused.
+    SIGNATURE_HEADERS = %w[signature signature-input signature-agent].freeze
+
+    # The longest Web Bot Auth header value forwarded, in bytes.
+    MAX_SIGNATURE_HEADER_BYTES = 4096
+
     # Upstream statuses that can be relayed; 3xx inside this range is not.
     RELAYABLE_STATUS = (200..599)
 
@@ -411,6 +420,10 @@ module Fingerly
       FORWARDED_CLIENT_HEADERS.each do |name|
         value = non_blank(safe(request.header(name)))
         headers[name] = value if value
+      end
+      SIGNATURE_HEADERS.each do |name|
+        value = non_blank(safe(request.header(name)))
+        headers[name] = value if value && value.bytesize <= MAX_SIGNATURE_HEADER_BYTES
       end
       headers
     end
