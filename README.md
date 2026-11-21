@@ -132,12 +132,18 @@ older server does not send it.
 `event.ai` is set only when `event.visitor_kind` is
 `Fingerly::VisitorKind::AI_BOT`, and `nil` otherwise: a `Fingerly::AiAgent`
 with the agent's `name`, `provider`, `purpose`, `runtime`, `declared?` and
-`verification` (`method`, `result`). The identity comes from the user agent,
-which anyone can copy, and is not verified yet
-(`Fingerly::AiVerificationMethod::NONE`,
-`Fingerly::AiVerificationResult::NOT_ATTEMPTED`), so treat it as a label, not
-proof. Only clients that run the Fingerly SDK produce events, so crawlers that
-do not run JavaScript never appear. `events.list` filters on `kind:`,
+`verification` (`method`, `result`). The agent is named by a Web Bot Auth
+signature when the request carried one, otherwise by its user agent.
+`verification` says how far that was checked:
+`Fingerly::AiVerificationMethod::SIGNATURE` (the operator's published key
+signed the request) or `Fingerly::AiVerificationMethod::IP_LIST` (the address
+is inside the operator's published ranges), with result
+`Fingerly::AiVerificationResult::PASS`, `Fingerly::AiVerificationResult::FAIL`
+(the name was borrowed), or `Fingerly::AiVerificationResult::NOT_ATTEMPTED`
+with method `Fingerly::AiVerificationMethod::NONE` (the operator publishes
+nothing to check against, or it could not be checked; the name is then only
+the client's claim). Only clients that run the Fingerly SDK produce events, so
+crawlers that do not run JavaScript never appear. `events.list` filters on `kind:`,
 `ai_provider:` (exact and case-sensitive, such as `"OpenAI"`) and `ai_purpose:`.
 
 ```ruby

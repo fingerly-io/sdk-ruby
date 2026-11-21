@@ -84,11 +84,17 @@ module Fingerly
   # The AI agent behind an event whose +visitor_kind+ is
   # {VisitorKind::AI_BOT}.
   #
-  # The identity comes from the agent's user agent, which anyone can copy. It
-  # is not verified yet: {#verification} says how far the claim was checked, so
-  # read it as a label, not as proof. {#purpose}, {#runtime} and the
-  # verification values are plain strings, so a value the API adds later still
-  # reads.
+  # The agent is named by a Web Bot Auth signature when the request carried
+  # one, otherwise by its user agent. {#verification} says how far that was
+  # checked: {AiVerificationMethod::SIGNATURE} (the operator's published key
+  # signed the request) or {AiVerificationMethod::IP_LIST} (the address is
+  # inside the operator's published ranges), with result
+  # {AiVerificationResult::PASS}, {AiVerificationResult::FAIL} (the name was
+  # borrowed), or {AiVerificationResult::NOT_ATTEMPTED} with method
+  # {AiVerificationMethod::NONE} (the operator publishes nothing to check
+  # against, or it could not be checked; the name is then only the client's
+  # claim). {#purpose}, {#runtime} and the verification values are plain
+  # strings, so a value the API adds later still reads.
   class AiAgent
     # @return [String, nil] the agent as its operator names it, such as
     #   +ChatGPT-User+ or +Claude-User+
@@ -157,8 +163,9 @@ module Fingerly
     #   nil, and empty when nothing fired
     attr_reader :triggers
     # @return [AiAgent, nil] the AI agent behind the event, present only when
-    #   +visitor_kind+ is {VisitorKind::AI_BOT}. The identity comes from the
-    #   user agent and is not verified yet; see {AiAgent#verification}.
+    #   +visitor_kind+ is {VisitorKind::AI_BOT}. The agent is named by a Web
+    #   Bot Auth signature when the request carried one, otherwise by its user
+    #   agent; see {AiAgent#verification} for how far that was checked.
     attr_reader :ai
     # @return [Hash, nil] an allow-listed view of the archived request, when
     #   one was kept: schema, request id, time, SDK, network, IP
