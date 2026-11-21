@@ -91,8 +91,9 @@ Full guide: [docs.fingerly.io/docs/sdks/ruby](https://docs.fingerly.io/docs/sdks
 | Read or write an iOS device's DeviceCheck bits | `device_check.query` / `device_check.write` | [DeviceCheck bits](#devicecheck-bits) |
 | Check a webhook delivery is genuine | `Fingerly::Webhooks.verify` and `.parse` | [Verify webhooks](#verify-webhooks) |
 | Keep the browser SDK first-party, away from content blockers | `Fingerly::Proxy`, a Rack middleware | [First-party proxy](#first-party-proxy-same-origin) |
+| See AI crawlers that never run your pages' JavaScript, and tell them apart | `Fingerly::AgentSightings` and its Rack middleware | [Agent sightings](#agent-sightings) |
 
-On this page: [Read events](#read-events) · [DeviceCheck bits](#devicecheck-bits) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
+On this page: [Read events](#read-events) · [DeviceCheck bits](#devicecheck-bits) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Agent sightings](#agent-sightings) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
 
 ## Read events
 
@@ -559,6 +560,134 @@ dashboard issued rather than inventing one: blockers look for words such as
 
 </details>
 
+## Agent sightings
+
+Most AI crawlers and fetchers, such as GPTBot or ClaudeBot, read your pages
+without running their JavaScript, so the browser SDK never sees them.
+`Fingerly::AgentSightings` reports the requests your server served to
+Fingerly, which answers what sent each one: a person's browser, an AI agent,
+other automation or a search crawler. The requests are then counted in the
+dashboard, and your code can ask for the answer.
+
+The SDK forwards raw input and remembers the answers; it never judges a user
+agent or an address itself. An AI agent's identity starts from what the
+request claims, and `answer.ai.verification` says how far that claim was
+checked, so read it as a label rather than as proof.
+
+Build one per process at start-up with a secret key and the same kind of
+`client_ip` callback the [proxy](#first-party-proxy-same-origin) takes, then
+mount its middleware first in the stack, so it also sees `/robots.txt` and the
+other files your server answers itself:
+
+```ruby
+# config/initializers/fingerly.rb
+FINGERLY_SIGHTINGS = Fingerly::AgentSightings.new(
+  secret_key: ENV.fetch("FINGERLY_SECRET_KEY"),
+  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
+)
+
+Rails.application.config.middleware.insert_before 0,
+                                                  Fingerly::AgentSightings::Middleware,
+                                                  FINGERLY_SIGHTINGS
+```
+
+```ruby
+# config.ru, for Sinatra, Hanami or a bare Rack app
+require "fingerly"
+require_relative "app" # defines MyApp, your Sinatra or Rack application
+
+SIGHTINGS = Fingerly::AgentSightings.new(
+  secret_key: ENV.fetch("FINGERLY_SECRET_KEY"),
+  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
+)
+
+use Fingerly::AgentSightings::Middleware, SIGHTINGS
+run MyApp
+```
+
+`lookup` answers from memory what the server said about this exact request
+before, and `Fingerly::AgentSightings::UNKNOWN` when it has not said anything
+yet. It never waits on the network and never raises. Treat `UNKNOWN` as
+"serve as usual":
+
+```ruby
+class ArticlesController < ApplicationController
+  def show
+    @article = Article.find(params[:id])
+    answer = FINGERLY_SIGHTINGS.lookup(request)
+    return if answer == Fingerly::AgentSightings::UNKNOWN
+
+    # Your policy: here, a crawler collecting training data gets the summary.
+    @summary_only = answer.visitor_kind == Fingerly::VisitorKind::AI_BOT &&
+                    answer.ai&.purpose == Fingerly::AiPurpose::TRAINING
+  end
+end
+```
+
+An answer is an `AgentSighting` with `visitor_kind` (see `VisitorKind`),
+`agent` (such as `GPTBot` or `Googlebot`, when the server knows it) and, for
+an AI agent, `ai` with `name`, `provider`, `purpose` (`AiPurpose`), `runtime`
+(`AiRuntime`) and `verification` (`AiVerificationMethod`,
+`AiVerificationResult`). The first request from a new visitor is answered
+`UNKNOWN`: the server is asked after the response, and later requests get its
+answer.
+
+### What is reported
+
+By default the middleware reports every response with a `Content-Type` of
+`text/html` or `application/xhtml+xml`, and every request for `/robots.txt`,
+`/llms.txt` and `/llms-full.txt`, whatever the status. Static assets, API
+routes and health checks are left out. What is reported is decided by your
+own response and path, never by the visitor's user agent, address or headers.
+
+```ruby
+use Fingerly::AgentSightings::Middleware, SIGHTINGS,
+    content_types: %w[text/html application/xhtml+xml text/markdown], # replaces the default
+    include_path_prefixes: ["/feed"], # reported whatever their content type
+    exclude_path_prefixes: ["/admin"] # never reported; wins over everything
+```
+
+Paths are matched against `PATH_INFO`, as the proxy does. The middleware
+reports after your application answered, in memory, so it never delays a
+response, and nothing it does can fail one. A framework that does not run
+Rack middleware can call `SIGHTINGS.report(env)` itself after its response.
+
+| Sent for each request | Never sent, never logged |
+| --- | --- |
+| `User-Agent` as received (a value over 4096 bytes is not reported at all, and stays `UNKNOWN`), the address `client_ip` returned (a request without one is not reported), `Host`, the method, the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers (each left out when over 4096 bytes), and how many times the same request was seen since the last report | The path, the query string, cookies, `Authorization`, any other header, the request body and your response |
+
+### Memory, flushing and failures
+
+| Rule | Behaviour |
+| --- | --- |
+| Answers remembered | At most `capacity:` (4096 by default, 65536 at most), least recently used dropped first. A few hundred bytes each: about 1.5 MB at the default. Each expires after the `ttl` the server gave it; a signed request is never remembered, and a new `rules_version` drops them all. |
+| Pending reports | At most 1000. Repeats of one request fold into one item with a count, signed requests excepted. When full, a new request is not reported and stays `UNKNOWN`; `dropped_count` counts them. |
+| Flushing | One background thread per process sends up to 200 items when 200 are pending, when they reach 64 KiB, or 2 seconds after the oldest, one flush at a time, each within 5 seconds. A forked worker starts its own thread and reports only its own requests. |
+| `429` | The batch is kept and nothing is sent until `Retry-After` has passed. |
+| `401` / `403` | The batch is dropped, nothing is sent for 60 seconds, and the refused key is logged once. |
+| `5xx`, or no connection | The batch is kept and sent again after 1, 2, 4 and up to 60 seconds. |
+| Timed out after sending | The batch is dropped, because the server may already have counted it. |
+| `422` or any other refusal | The batch is dropped and logged at most once a minute. |
+
+In every case requests are served as usual and `lookup` keeps answering from
+memory or `UNKNOWN`. Log lines go to `logger:` when you pass one and to
+standard error otherwise, and never carry a request's fields.
+
+`flush` sends what is pending now and waits for it, for runtimes that end
+between invocations. `close` makes one last flush and stops the thread, for a
+clean shutdown:
+
+```ruby
+at_exit { SIGHTINGS.close }
+```
+
+`fingerly.agents.report_sightings(items)` is the call underneath, for building
+your own batching: it takes up to 200 `Fingerly::AgentSightingInput` values
+and returns an `AgentSightingsReport` with `rules_version` and one
+`AgentSighting` per item, in order. A `429` raises an `APIError` with
+`retry_after` and `rate_limit_scope` (`APIError::RATE_LIMIT_SCOPE_DAILY` for
+the daily allowance).
+
 ## Threads, fibers and deadlines
 
 There is no asynchronous client, and none is needed.
@@ -662,7 +791,9 @@ is refused.
 `Client` holds the connection and the options; `Events` owns the reads and the
 list filters, and `Event`, `EventPage` and `EventTrigger` are what they speak
 in. `Webhooks` verifies signatures. `Proxy` holds every proxy decision, with
-`ProxyRequest` as the shape `client_ip` is given. `Config` validates every
+`ProxyRequest` as the shape `client_ip` is given. `AgentSightings` holds the
+answer cache, the pending buffer and the background flusher, and its
+`Middleware` decides which responses are reported. `Config` validates every
 caller-supplied option before any network access, and `Transport` is the one
 place that knows how to bound an exchange and reuse a socket.
 
