@@ -578,7 +578,9 @@ dashboard, and your code can ask for the answer.
 The SDK forwards raw input and remembers the answers; it never judges a user
 agent or an address itself. An AI agent's identity starts from what the
 request claims, and `answer.ai.verification` says how far that claim was
-checked, so read it as a label rather than as proof.
+checked: `PASS` means the operator's key or published ranges confirmed it,
+`FAIL` means the name was borrowed, and `NOT_ATTEMPTED` leaves it the
+client's claim.
 
 Build one per process at start-up with a secret key and the same kind of
 `client_ip` callback the [proxy](#first-party-proxy-same-origin) takes, then
