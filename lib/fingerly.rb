@@ -10,6 +10,10 @@ require_relative "fingerly/transport"
 require_relative "fingerly/client"
 require_relative "fingerly/webhooks"
 require_relative "fingerly/proxy"
+require_relative "fingerly/agent_sightings"
+require_relative "fingerly/agent_sightings_store"
+require_relative "fingerly/agent_sightings_reader"
+require_relative "fingerly/agent_sightings_middleware"
 
 # Server-side Fingerly SDK.
 #

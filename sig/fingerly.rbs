@@ -539,6 +539,77 @@ module Fingerly
     def initialize: (Hash[String, untyped]) -> void
   end
 
+  class AgentSightings
+    UNKNOWN: AgentSighting
+    DEFAULT_CAPACITY: Integer
+    MAX_CAPACITY: Integer
+    MAX_PENDING: Integer
+    FLUSH_ITEMS: Integer
+    FLUSH_BYTES: Integer
+    FLUSH_AFTER: Integer
+    FLUSH_DEADLINE: Integer
+    MAX_HEADER_BYTES: Integer
+    MAX_COUNT: Integer
+    TICK: Float
+    AUTH_PAUSE: Integer
+    RATE_LIMIT_PAUSE: Integer
+    BACKOFF_MIN: Integer
+    BACKOFF_MAX: Integer
+    DROP_LOG_INTERVAL: Integer
+    ITEM_OVERHEAD: Integer
+    WELL_KNOWN_PATHS: Array[String]
+
+    type request = Hash[String, untyped] | _HasEnv
+
+    interface _HasEnv
+      def env: () -> Hash[String, untyped]
+    end
+
+    attr_reader capacity: Integer
+
+    def initialize: (
+      secret_key: String,
+      client_ip: ^(ProxyRequest) -> String?,
+      ?capacity: Integer,
+      ?endpoint: String?,
+      ?allow_insecure_loopback: bool,
+      ?configure_http: (^(untyped) -> void)?,
+      ?logger: untyped,
+      ?clock: (^() -> Numeric)?
+    ) -> void
+    def lookup: (request) -> AgentSighting
+    def report: (request) -> nil
+    def flush: () -> nil
+    def close: () -> nil
+    def dropped_count: () -> Integer
+    def self.key: (
+      user_agent: String,
+      client_ip: String,
+      ?signature_agent: String,
+      ?signed: bool
+    ) -> String?
+    def self.canonical_ip: (untyped) -> String?
+    def self.monotonic: () -> Float
+
+    def inspect: () -> String
+
+    class Middleware
+      DEFAULT_CONTENT_TYPES: Array[String]
+
+      def initialize: (
+        untyped app,
+        AgentSightings sightings,
+        ?content_types: Array[String],
+        ?include_path_prefixes: Array[String],
+        ?exclude_path_prefixes: Array[String]
+      ) -> void
+      def call: (Hash[String, untyped]) -> untyped
+      def reported?: (String, untyped) -> bool
+
+      def inspect: () -> String
+    end
+  end
+
   class DeviceCheck
     def initialize: (Client) -> void
     def query: (String) -> DeviceCheckBits
