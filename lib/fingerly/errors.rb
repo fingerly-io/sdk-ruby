@@ -215,6 +215,20 @@ module Fingerly
 
   # Raised when the Fingerly API could not be reached at all.
   #
-  # A DNS failure, a refused connection or a TLS error arrives here.
-  class ConnectionError < Error; end
+  # A DNS failure, a refused connection or a TLS error arrives here, and so
+  # does a connection lost or a response cut short once the request was sent.
+  class ConnectionError < Error
+    # @api private
+    def initialize(message = "Could not reach the Fingerly API", sent: false)
+      super(message)
+      @sent = sent
+    end
+
+    # Whether the whole request had been written when the connection failed.
+    # When it had, the server may have acted on it, so sending it again could
+    # do its work twice; when it had not, the server never saw all of it.
+    #
+    # @return [Boolean]
+    def sent? = @sent
+  end
 end

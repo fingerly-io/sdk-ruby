@@ -122,11 +122,11 @@ module Fingerly
 
       private
 
-      # A Web Bot Auth header as received, or nil when absent, empty or over
-      # the limit.
+      # A Web Bot Auth header as received, or nil when absent, empty,
+      # whitespace only or over the limit.
       def header(env, name)
         value = env[name]
-        return nil unless value.is_a?(String) && !value.empty?
+        return nil unless value.is_a?(String) && !value.strip.empty?
 
         value.bytesize > MAX_HEADER_BYTES ? nil : value
       end

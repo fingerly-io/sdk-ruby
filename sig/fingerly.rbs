@@ -78,6 +78,8 @@ module Fingerly
   end
 
   class ConnectionError < Error
+    def initialize: (?String message, ?sent: bool) -> void
+    def sent?: () -> bool
   end
 
   module Signal
@@ -548,11 +550,14 @@ module Fingerly
     FLUSH_BYTES: Integer
     FLUSH_AFTER: Integer
     FLUSH_DEADLINE: Integer
+    IN_FLIGHT_WAIT: Integer
+    MAX_TTL: Integer
     MAX_HEADER_BYTES: Integer
     MAX_COUNT: Integer
     TICK: Float
     AUTH_PAUSE: Integer
     RATE_LIMIT_PAUSE: Integer
+    RETRY_AFTER_MIN: Integer
     BACKOFF_MIN: Integer
     BACKOFF_MAX: Integer
     LOG_INTERVAL: Integer

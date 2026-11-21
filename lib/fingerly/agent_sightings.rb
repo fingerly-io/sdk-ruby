@@ -46,6 +46,9 @@ module Fingerly
     FLUSH_AFTER = 2
     # Seconds one flush may take, the response body included.
     FLUSH_DEADLINE = 5
+    # Seconds {#flush} waits for a flush already in flight: its deadline and a
+    # second of margin.
+    IN_FLIGHT_WAIT = FLUSH_DEADLINE + 1
     # The longest header value reported, in bytes.
     MAX_HEADER_BYTES = 4096
     # The most requests one item may stand for.
@@ -57,6 +60,8 @@ module Fingerly
     AUTH_PAUSE = 60
     # Seconds reporting stops after a 429 that named no Retry-After.
     RATE_LIMIT_PAUSE = 60
+    # The shortest stop after a 429, whatever its Retry-After said.
+    RETRY_AFTER_MIN = 1
     # Backoff bounds, in seconds, after a 503 or a transport error.
     BACKOFF_MIN = 1
     BACKOFF_MAX = 60
@@ -173,9 +178,8 @@ module Fingerly
     #
     # @return [nil]
     def flush
-      deadline = AgentSightings.monotonic + (FLUSH_DEADLINE * 2)
       loop do
-        break unless await_idle(deadline)
+        break unless await_idle(AgentSightings.monotonic + IN_FLIGHT_WAIT)
         break unless flush_once == :sent
         break if @lock.synchronize { @buffer.empty? }
       end
@@ -327,8 +331,10 @@ module Fingerly
       # Once connected, the server may have counted the batch, and a retry
       # would count it twice. Before that, nothing was sent.
       e.connected? ? drop("a report timed out after it was sent") : keep(batch)
-    rescue ConnectionError
-      keep(batch)
+    rescue ConnectionError => e
+      # A connection lost once the whole request was written is a timeout
+      # after sending by another name: the server may have counted it.
+      e.sent? ? drop("a report's connection failed after it was sent") : keep(batch)
     rescue StandardError
       drop("the API answered a report with a body that could not be read")
     end
@@ -345,7 +351,9 @@ module Fingerly
     def refused(error, batch)
       case error.status
       when 429
-        pause(error.retry_after || rate_limit_wait(error))
+        # A Retry-After of 0, or a date already past, still stops a second;
+        # an unreadable one reads as none.
+        pause([error.retry_after || rate_limit_wait(error), RETRY_AFTER_MIN].max)
         restore(batch)
       when 401, 403
         pause(AUTH_PAUSE)

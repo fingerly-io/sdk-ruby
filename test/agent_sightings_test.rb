@@ -120,6 +120,20 @@ class AgentSightingsTest < Minitest::Test
     end
   end
 
+  def test_an_answer_is_kept_a_day_at_most
+    FakeAPI.run(answering(ttl: 30 * 86_400)) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env)
+      fingerly.flush
+      @clock.advance(86_399)
+
+      refute_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env)
+      @clock.advance(1)
+
+      assert_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env)
+    end
+  end
+
   def test_a_ttl_of_zero_is_never_cached
     FakeAPI.run(answering(ttl: 0)) do |api|
       fingerly = sightings(api)
@@ -218,6 +232,22 @@ class AgentSightingsTest < Minitest::Test
     end
   end
 
+  def test_a_blank_signature_header_is_absent
+    blank = env(signature: " ", signature_input: "\t", signature_agent: "  ")
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      2.times { fingerly.report(blank) }
+      fingerly.flush
+      sent = items_of(api.requests.first)
+
+      # Unsigned, so folded, and sent without the blank fields.
+      assert_equal([2], sent.map { |item| item["count"] })
+      %w[signature signature_input signature_agent].each { |field| refute sent[0].key?(field) }
+      # Its key is that of the same request without them.
+      refute_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env)
+    end
+  end
+
   def test_a_count_stops_at_the_server_limit
     FakeAPI.run(status(429, "retry-after" => "3600")) do |api|
       fingerly = sightings(api)
@@ -291,6 +321,18 @@ class AgentSightingsTest < Minitest::Test
       assert_equal 1, most
       assert_equal(600, api.requests.sum { |request| items_of(request).size })
     end
+  end
+
+  # Its five second deadline and a second of margin, and it never raises.
+  def test_flush_waits_at_most_six_seconds_for_a_flush_in_flight
+    fingerly = sightings("http://127.0.0.1:9")
+    fingerly.instance_variable_set(:@in_flight, true)
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    assert_nil fingerly.flush
+    assert_in_delta 6, Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, 0.5
+  ensure
+    fingerly&.instance_variable_set(:@in_flight, false)
   end
 
   def test_the_buffer_holds_at_most_a_thousand_items_and_counts_the_rest

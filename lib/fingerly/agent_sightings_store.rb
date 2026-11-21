@@ -2,6 +2,9 @@
 
 module Fingerly
   class AgentSightings
+    # The longest an answer is remembered, in seconds, whatever its ttl.
+    MAX_TTL = 86_400
+
     # One request worth reporting: its cache key, whether it was signed, and
     # the raw fields an {AgentSightingInput} is built from.
     #
@@ -42,7 +45,8 @@ module Fingerly
       end
 
       # Stores a response's answers. A new +rules_version+ drops every entry
-      # first, and an answer with a ttl of 0 is never kept.
+      # first, an answer with a ttl of 0 is never kept, and none is kept longer
+      # than {MAX_TTL}.
       #
       # @param answers [Array(String, AgentSighting)] keys and their answers
       def store(rules_version, answers, now)
@@ -52,7 +56,7 @@ module Fingerly
           next unless answer.ttl.positive?
 
           @entries.delete(key)
-          @entries[key] = [answer, now + answer.ttl]
+          @entries[key] = [answer, now + [answer.ttl, MAX_TTL].min]
           @entries.shift while @entries.size > @capacity
         end
       end

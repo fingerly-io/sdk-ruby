@@ -61,8 +61,24 @@ module Fingerly
 
     Result = Struct.new(:status, :headers, :body, keyword_init: true)
 
-    # How far one call got; see {TimeoutError#connected?}.
-    Progress = Struct.new(:connected)
+    # How far one call got; see {TimeoutError#connected?} and
+    # {ConnectionError#sent?}.
+    Progress = Struct.new(:connected, :written)
+
+    # Marks a request written once Net::HTTP has sent all of it, so a
+    # connection lost after that can be told from one lost before. Should
+    # Net::HTTP stop calling it, nothing is marked and every lost connection
+    # reads as before sending.
+    module WriteTracking
+      attr_accessor :fingerly_progress
+
+      def exec(sock, ver, path)
+        result = super
+        fingerly_progress.written = true
+        result
+      end
+    end
+    private_constant :WriteTracking
 
     # @param origin [String] scheme and authority, without a trailing slash
     # @param timeout [Numeric] the deadline for one exchange, in seconds
@@ -88,9 +104,11 @@ module Fingerly
     def call(method, path, headers, body = nil)
       # Whether a connection was open when time ran out: a timeout before one
       # was sent nothing, and a caller that must never send twice can retry it.
-      progress = Progress.new(false)
+      progress = Progress.new(false, false)
       request = method.new(path, headers)
       request.body = body if body
+      request.extend(WriteTracking)
+      request.fingerly_progress = progress
       # Net::HTTP's own retry would resend on a connection error; reuse is
       # handled here instead, where an idempotent request can be told from one
       # that must never be sent twice.
@@ -114,7 +132,8 @@ module Fingerly
            Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Net::ProtocolError => e
       # Every network failure arrives as the SDK's own error, never as a raw
       # runtime one. The class names the cause; nothing from the body does.
-      raise ConnectionError, "Could not reach the Fingerly API (#{e.class})"
+      raise ConnectionError.new("Could not reach the Fingerly API (#{e.class})",
+                                sent: progress.written)
     end
 
     # Closes the idle connections kept for this destination.
@@ -249,6 +268,7 @@ module Fingerly
       apply_timeouts(http, deadline)
       http.start unless http.started?
       progress.connected = true
+      progress.written = false
       apply_timeouts(http, deadline)
 
       # The result is captured rather than returned from the block. Net::HTTP
@@ -272,7 +292,7 @@ module Fingerly
         end
         declared = response.content_length
         if declared && body.bytesize != declared
-          raise ConnectionError, "The Fingerly API response was cut short"
+          raise ConnectionError.new("The Fingerly API response was cut short", sent: true)
         end
 
         result = Result.new(

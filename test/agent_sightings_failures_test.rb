@@ -95,6 +95,45 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
+  def test_a_retry_after_of_zero_or_already_past_still_stops_a_second
+    ["0", "Thu, 01 Jan 2026 00:00:00 GMT"].each do |value|
+      FakeAPI.run(status(429, "retry-after" => value)) do |api|
+        fingerly = sightings(api)
+        fingerly.report(env)
+        fingerly.flush
+        api.handler = answering
+        @clock.advance(0.9)
+        fingerly.flush
+
+        assert_equal 1, api.requests.size, value
+        @clock.advance(0.1)
+        fingerly.flush
+
+        assert_equal 2, api.requests.size, value
+      end
+    end
+  end
+
+  # An unreadable Retry-After, a negative one included, reads as none.
+  def test_an_unreadable_retry_after_waits_a_minute
+    ["-5", "soon"].each do |value|
+      FakeAPI.run(status(429, "retry-after" => value)) do |api|
+        fingerly = sightings(api)
+        fingerly.report(env)
+        fingerly.flush
+        api.handler = answering
+        @clock.advance(59)
+        fingerly.flush
+
+        assert_equal 1, api.requests.size, value
+        @clock.advance(1)
+        fingerly.flush
+
+        assert_equal 2, api.requests.size, value
+      end
+    end
+  end
+
   def test_the_daily_allowance_waits_for_the_next_utc_day
     now = Time.now.utc
     left = Time.utc(now.year, now.month, now.day) + 86_400 - now
@@ -225,6 +264,22 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
+  # Once the whole request was written, the server may have counted it.
+  def test_a_connection_lost_after_sending_drops_the_batch
+    %i[closed cut_short].each do |ending|
+      raw_api(ending) do |origin, served|
+        fingerly = sightings(origin)
+        fingerly.report(env)
+        fingerly.flush
+
+        assert_equal 1, served.size, ending.to_s
+        assert_equal 0, fingerly.instance_variable_get(:@buffer).size, ending.to_s
+        assert_nil fingerly.instance_variable_get(:@paused_until), ending.to_s
+        assert_includes @logger.lines.last, "after it was sent", ending.to_s
+      end
+    end
+  end
+
   def test_an_answer_of_the_wrong_length_is_dropped
     handler = lambda do |_req, res|
       res.status = 200
@@ -303,6 +358,33 @@ class AgentSightingsFailuresTest < Minitest::Test
   end
 
   private
+
+  # A server that reads each whole request, then closes the connection with
+  # no answer (+:closed+) or after part of a body (+:cut_short+).
+  def raw_api(ending)
+    server = TCPServer.new("127.0.0.1", 0)
+    served = Queue.new
+    thread = Thread.new do
+      loop do
+        socket = server.accept
+        head = +""
+        head << socket.readpartial(4096) until head.include?("\r\n\r\n")
+        length = head[/^content-length:\s*(\d+)/i, 1].to_i
+        body = +(head.split("\r\n\r\n", 2)[1] || "")
+        body << socket.readpartial(4096) while body.bytesize < length
+        served << body
+        if ending == :cut_short
+          socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n" \
+                       "content-length: 100\r\n\r\n{\"rules_version\"")
+        end
+        socket.close
+      end
+    end
+    yield "http://127.0.0.1:#{server.addr[1]}", served
+  ensure
+    thread&.kill
+    server&.close
+  end
 
   def sent_agents(api)
     api.requests.map { |request| items_of(request).map { |item| item["user_agent"] } }
