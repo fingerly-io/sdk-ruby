@@ -49,6 +49,66 @@ class ContractTest < Minitest::Test
     end
   end
 
+  # ai is absent on every row that is not an AI agent.
+  def test_every_event_fixture_reads_its_visitor_kind_and_ai
+    Fixtures.responses("SDKEventOut").each do |fixture|
+      want = fixture.fetch("body")
+      event = Fingerly::Event.new(want)
+
+      if want["visitor_kind"].nil?
+        assert_nil event.visitor_kind, fixture["name"]
+      else
+        assert_equal want["visitor_kind"], event.visitor_kind, fixture["name"]
+      end
+
+      assert_equal want["ai"].is_a?(Hash), !event.ai.nil?, fixture["name"]
+    end
+  end
+
+  def test_reads_the_ai_agent_fixture
+    fixture = named_response("ai_agent")
+    body = JSON.generate(fixture.fetch("body"))
+    FakeAPI.run(FakeAPI.json(fixture.fetch("status"), body)) do |api|
+      event = client(api).events.get("id")
+      ai = event.ai
+
+      assert_equal Fingerly::VisitorKind::AI_BOT, event.visitor_kind
+      assert_instance_of Fingerly::AiAgent, ai
+      assert_equal "ChatGPT-User", ai.name
+      assert_equal "OpenAI", ai.provider
+      assert_equal Fingerly::AiPurpose::USER_FETCH, ai.purpose
+      assert_equal Fingerly::AiRuntime::PROVIDER_CLOUD, ai.runtime
+      assert_predicate ai, :declared?
+      assert_equal Fingerly::AiVerificationMethod::NONE, ai.verification.method
+      assert_equal Fingerly::AiVerificationResult::NOT_ATTEMPTED, ai.verification.result
+    end
+  end
+
+  def test_reads_an_event_without_ai
+    fixture = named_response("event")
+
+    refute fixture.fetch("body").key?("ai")
+    FakeAPI.run(FakeAPI.json(200, JSON.generate(fixture.fetch("body")))) do |api|
+      assert_nil client(api).events.get("id").ai
+    end
+  end
+
+  def test_reads_ai_values_this_sdk_does_not_know
+    body = JSON.parse(JSON.generate(named_response("ai_agent").fetch("body")))
+    body["visitor_kind"] = "future_kind"
+    body["ai"].merge!("purpose" => "future_purpose", "runtime" => "future_runtime")
+    body["ai"]["verification"] = { "method" => "future_method", "result" => "future_result" }
+    FakeAPI.run(FakeAPI.json(200, JSON.generate(body))) do |api|
+      event = client(api).events.get("id")
+
+      assert_equal "future_kind", event.visitor_kind
+      assert_equal "future_purpose", event.ai.purpose
+      assert_equal "future_runtime", event.ai.runtime
+      assert_equal "future_method", event.ai.verification.method
+      assert_equal "future_result", event.ai.verification.result
+    end
+  end
+
   def test_reads_every_page_fixture
     fixtures = Fixtures.responses("SDKEventsOut")
 
@@ -180,6 +240,12 @@ class ContractTest < Minitest::Test
   end
 
   private
+
+  def named_response(name)
+    Fixtures.document.fetch("responses").find { |item| item["name"] == name } ||
+
+      flunk("no fixture named #{name}")
+  end
 
   def client(api)
     Fingerly::Client.new(secret_key: SECRET_KEY, endpoint: api.origin,

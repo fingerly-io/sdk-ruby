@@ -265,6 +265,55 @@ module Fingerly
     ALL: Array[String]
   end
 
+  module AiPurpose
+    TRAINING: String
+    SEARCH: String
+    USER_FETCH: String
+    AGENT: String
+    ALL: Array[String]
+  end
+
+  module AiRuntime
+    PROVIDER_CLOUD: String
+    HOSTED_BROWSER: String
+    USER_DEVICE: String
+    ALL: Array[String]
+  end
+
+  module AiVerificationMethod
+    SIGNATURE: String
+    IP_LIST: String
+    REVERSE_DNS: String
+    NONE: String
+    ALL: Array[String]
+  end
+
+  module AiVerificationResult
+    PASS: String
+    FAIL: String
+    NOT_ATTEMPTED: String
+    ALL: Array[String]
+  end
+
+  class AiVerification
+    attr_reader method: String?
+    attr_reader result: String?
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class AiAgent
+    attr_reader name: String?
+    attr_reader provider: String?
+    attr_reader purpose: String?
+    attr_reader runtime: String?
+    attr_reader declared: bool
+    attr_reader verification: AiVerification?
+
+    def initialize: (Hash[String, untyped]) -> void
+    def declared?: () -> bool
+  end
+
   class EventTrigger
     SIGNAL_ATTESTATION_FAILED: String
     SIGNAL_ATTESTATION_MISSING: String
@@ -321,6 +370,7 @@ module Fingerly
     attr_reader occurred_at: Time?
     attr_reader suspect_score: Integer?
     attr_reader triggers: Array[EventTrigger]
+    attr_reader ai: AiAgent?
     attr_reader document: Hash[String, untyped]?
     attr_reader raw: Hash[String, untyped]
 
@@ -447,7 +497,10 @@ module Fingerly
       ?page: Integer?,
       ?limit: Integer?,
       ?visitor: String?,
-      ?level: String?
+      ?level: String?,
+      ?kind: String?,
+      ?ai_provider: String?,
+      ?ai_purpose: String?
     ) -> EventPage
     DEFAULT_MAX_AGE_SECONDS: Integer
 

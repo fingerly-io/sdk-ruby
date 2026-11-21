@@ -331,16 +331,28 @@ module Fingerly
     # @param limit [Integer, nil] rows per page; the server caps it at 200
     # @param visitor [String, nil] restricts the listing to one exact visitor
     # @param level [String, nil] restricts it to +low+, +medium+ or +high+
+    # @param kind [String, nil] restricts it to one visitor kind, such as
+    #   +ai_bot+; see {VisitorKind}. The server rejects a kind it does not know.
+    # @param ai_provider [String, nil] restricts it to AI agents from one
+    #   operator, exactly as events name it in {AiAgent#provider}, such as
+    #   +OpenAI+; the match is case-sensitive
+    # @param ai_purpose [String, nil] restricts it to AI agents with one
+    #   purpose, such as +user_fetch+; see {AiPurpose}. The server rejects a
+    #   purpose it does not know.
     # @return [EventPage]
     # @raise [APIError] on any non-2xx response
-    def list(from: nil, to: nil, page: nil, limit: nil, visitor: nil, level: nil)
+    def list(from: nil, to: nil, page: nil, limit: nil, visitor: nil, level: nil,
+             kind: nil, ai_provider: nil, ai_purpose: nil)
       query = {
         "from" => from && Events.instant(from),
         "to" => to && Events.instant(to),
         "page" => page && Config.positive_int(page, "page"),
         "limit" => limit && Config.positive_int(limit, "limit"),
         "visitor" => visitor,
-        "level" => level
+        "level" => level,
+        "kind" => kind,
+        "ai_provider" => ai_provider,
+        "ai_purpose" => ai_purpose
       }.compact
 
       suffix = query.empty? ? "" : "?#{URI.encode_www_form(query)}"

@@ -59,6 +59,75 @@ module Fingerly
     end
   end
 
+  # How an {AiAgent}'s claimed identity was checked, and what that found.
+  class AiVerification
+    # @return [String, nil] +signature+, +ip_list+, +reverse_dns+ or +none+;
+    #   see {AiVerificationMethod}. Named for the wire field, so it hides
+    #   +Object#method+ on this one class.
+    attr_reader :method
+    # @return [String, nil] +pass+, +fail+ or +not_attempted+; see
+    #   {AiVerificationResult}
+    attr_reader :result
+
+    # @api private
+    def initialize(payload)
+      @method = payload["method"]
+      @result = payload["result"]
+      freeze
+    end
+
+    def inspect
+      "#<Fingerly::AiVerification method=#{@method.inspect} result=#{@result.inspect}>"
+    end
+  end
+
+  # The AI agent behind an event whose +visitor_kind+ is
+  # {VisitorKind::AI_BOT}.
+  #
+  # The identity comes from the agent's user agent, which anyone can copy. It
+  # is not verified yet: {#verification} says how far the claim was checked, so
+  # read it as a label, not as proof. {#purpose}, {#runtime} and the
+  # verification values are plain strings, so a value the API adds later still
+  # reads.
+  class AiAgent
+    # @return [String, nil] the agent as its operator names it, such as
+    #   +ChatGPT-User+ or +Claude-User+
+    attr_reader :name
+    # @return [String, nil] the company that operates it, such as +OpenAI+,
+    #   +Anthropic+ or +Google+
+    attr_reader :provider
+    # @return [String, nil] +training+, +search+, +user_fetch+ or +agent+; see
+    #   {AiPurpose}
+    attr_reader :purpose
+    # @return [String, nil] +provider_cloud+, +hosted_browser+ or
+    #   +user_device+; see {AiRuntime}
+    attr_reader :runtime
+    # @return [Boolean] true when the agent named itself, in its user agent or
+    #   a signature
+    attr_reader :declared
+    # @return [AiVerification, nil] how the claimed identity was checked
+    attr_reader :verification
+
+    # @api private
+    def initialize(payload)
+      @name = payload["name"]
+      @provider = payload["provider"]
+      @purpose = payload["purpose"]
+      @runtime = payload["runtime"]
+      @declared = payload["declared"] == true
+      verification = payload["verification"]
+      @verification = verification.is_a?(Hash) ? AiVerification.new(verification) : nil
+      freeze
+    end
+
+    def declared? = declared
+
+    def inspect
+      "#<Fingerly::AiAgent name=#{name.inspect} provider=#{provider.inspect} " \
+        "purpose=#{purpose.inspect}>"
+    end
+  end
+
   # A stored identification event.
   #
   # {#suspect_score} is +nil+ when the request was not scored, which must not
@@ -87,6 +156,10 @@ module Fingerly
     # @return [Array<EventTrigger>] the signal groups behind the score; never
     #   nil, and empty when nothing fired
     attr_reader :triggers
+    # @return [AiAgent, nil] the AI agent behind the event, present only when
+    #   +visitor_kind+ is {VisitorKind::AI_BOT}. The identity comes from the
+    #   user agent and is not verified yet; see {AiAgent#verification}.
+    attr_reader :ai
     # @return [Hash, nil] an allow-listed view of the archived request, when
     #   one was kept: schema, request id, time, SDK, network, IP
     #   classification and city-level location, risk, attestation and
@@ -111,6 +184,7 @@ module Fingerly
       @suspect_score = payload["suspect_score"]
       @has_document = payload["has_document"] ? true : false
       @triggers = Array(payload["triggers"]).map { |item| EventTrigger.new(item) }.freeze
+      @ai = payload["ai"].is_a?(Hash) ? AiAgent.new(payload["ai"]) : nil
       @document = payload["document"]
       @raw = payload
       freeze

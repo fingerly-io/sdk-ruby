@@ -128,6 +128,24 @@ adds later is reachable without a gem upgrade.
 belongs to, on both `events.get` and `events.list` rows; it is `nil` when an
 older server does not send it.
 
+`event.ai` is set only when `event.visitor_kind` is
+`Fingerly::VisitorKind::AI_BOT`, and `nil` otherwise: a `Fingerly::AiAgent`
+with the agent's `name`, `provider`, `purpose`, `runtime`, `declared?` and
+`verification` (`method`, `result`). The identity comes from the user agent,
+which anyone can copy, and is not verified yet
+(`Fingerly::AiVerificationMethod::NONE`,
+`Fingerly::AiVerificationResult::NOT_ATTEMPTED`), so treat it as a label, not
+proof. Only clients that run the Fingerly SDK produce events, so crawlers that
+do not run JavaScript never appear. `events.list` filters on `kind:`,
+`ai_provider:` (exact and case-sensitive, such as `"OpenAI"`) and `ai_purpose:`.
+
+```ruby
+fetches = fingerly.events.list(
+  kind: Fingerly::VisitorKind::AI_BOT,
+  ai_purpose: Fingerly::AiPurpose::USER_FETCH
+)
+```
+
 ### Read an event you just identified
 
 An event is usually readable as soon as identification answers. If it is
@@ -176,7 +194,11 @@ missing from the module's frozen `ALL` array.
 | `Fingerly::Platform` | `Event#platform` | `WEB`, `ANDROID`, `IOS` |
 | `Fingerly::AnonymityNetwork` | `Event#anonymity_network` | `TOR`, `RELAY`, `VPN`, `PROXY`, `HOSTING` |
 | `Fingerly::DeviceKind` | `Event#device_kind` | `DESKTOP`, `MOBILE`, `TABLET`, `SERVER` |
-| `Fingerly::VisitorKind` | `Event#visitor_kind` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER` |
+| `Fingerly::VisitorKind` | `Event#visitor_kind`, `events.list(kind:)` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER` |
+| `Fingerly::AiPurpose` | `AiAgent#purpose`, `events.list(ai_purpose:)` | `TRAINING`, `SEARCH`, `USER_FETCH`, `AGENT` |
+| `Fingerly::AiRuntime` | `AiAgent#runtime` | `PROVIDER_CLOUD`, `HOSTED_BROWSER`, `USER_DEVICE` |
+| `Fingerly::AiVerificationMethod` | `AiVerification#method` | `SIGNATURE`, `IP_LIST`, `REVERSE_DNS`, `NONE` |
+| `Fingerly::AiVerificationResult` | `AiVerification#result` | `PASS`, `FAIL`, `NOT_ATTEMPTED` |
 | `Fingerly::AttestationState` | `event.document["attestation"]["state"]` | `ATTESTED`, `NOT_ATTESTED`, `FAILED` |
 | `Fingerly::AttestationStatus` | `event.document["attestation"]["status"]` | `VERIFIED`, `INDETERMINATE`, `INVALID`, `ABSENT`, `UNCONFIGURED` |
 | `Fingerly::AttestSkippedReason` | `event.document["attestation"]["attest_skipped"]` | `NOT_OFFERED`, `UNSUPPORTED`, `CHALLENGE_UNAVAILABLE`, `KEY_ERROR`, `TIMEOUT`, `BACKOFF`, `INSTALL_UNAVAILABLE` |

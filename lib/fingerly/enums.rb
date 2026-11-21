@@ -295,4 +295,60 @@ module Fingerly
 
     ALL = [HUMAN, AI_BOT, AUTOMATION, SEARCH_CRAWLER].freeze
   end
+
+  # What an AI agent's operator says its traffic is for: {AiAgent}'s
+  # +purpose+. The API can add values, so keep an +else+ branch.
+  module AiPurpose
+    # Collecting content to train models.
+    TRAINING = "training"
+    # Indexing for an AI answer or search product.
+    SEARCH = "search"
+    # Reading a page a person asked an assistant to read.
+    USER_FETCH = "user_fetch"
+    # Driving a browser on a person's behalf.
+    AGENT = "agent"
+
+    ALL = [TRAINING, SEARCH, USER_FETCH, AGENT].freeze
+  end
+
+  # Where an AI agent runs: {AiAgent}'s +runtime+. The API can add values, so
+  # keep an +else+ branch.
+  module AiRuntime
+    # The operator's own infrastructure.
+    PROVIDER_CLOUD = "provider_cloud"
+    # A third party's cloud browser.
+    HOSTED_BROWSER = "hosted_browser"
+    # A person's own browser.
+    USER_DEVICE = "user_device"
+
+    ALL = [PROVIDER_CLOUD, HOSTED_BROWSER, USER_DEVICE].freeze
+  end
+
+  # How an AI agent's claimed identity was checked: {AiVerification}'s
+  # +method+. The API can add values, so keep an +else+ branch.
+  module AiVerificationMethod
+    # A signed request.
+    SIGNATURE = "signature"
+    # The operator's published address ranges.
+    IP_LIST = "ip_list"
+    # A reverse lookup confirmed forward.
+    REVERSE_DNS = "reverse_dns"
+    # No check was made.
+    NONE = "none"
+
+    ALL = [SIGNATURE, IP_LIST, REVERSE_DNS, NONE].freeze
+  end
+
+  # What checking an AI agent's identity found: {AiVerification}'s +result+.
+  # The API can add values, so keep an +else+ branch.
+  module AiVerificationResult
+    # The claim held.
+    PASS = "pass"
+    # The claim was checked and did not hold.
+    FAIL = "fail"
+    # No check was made.
+    NOT_ATTEMPTED = "not_attempted"
+
+    ALL = [PASS, FAIL, NOT_ATTEMPTED].freeze
+  end
 end
