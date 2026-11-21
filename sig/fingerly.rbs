@@ -88,7 +88,6 @@ module Fingerly
     RESIDENTIAL_PROXY_MEDIUM_CONFIDENCE: String
     RESIDENTIAL_PROXY_HIGH_CONFIDENCE: String
     VPN_PUBLIC: String
-    VPN_TIMEZONE: String
     VPN_RELAY: String
     VPN_MOBILE: String
     VPN_OS_MISMATCH: String
@@ -103,6 +102,7 @@ module Fingerly
     ANYCAST_IP: String
     INCOGNITO: String
     BAD_BOT: String
+    AI_SPOOFED: String
     AUTOMATION: String
     FETCH_METADATA_MISSING: String
     WEB_TICKET_MISSING: String
@@ -110,6 +110,7 @@ module Fingerly
     ANTIDETECT_BROWSER: String
     VIRTUAL_MACHINE: String
     FINGERPRINT_SUPPRESSED: String
+    IDENTITY_OBFUSCATED: String
     PRIVACY_SETTINGS: String
     EMBEDDED_WEB_VIEW: String
     REMOTE_CONTROL: String
