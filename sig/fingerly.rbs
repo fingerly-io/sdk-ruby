@@ -124,6 +124,7 @@ module Fingerly
     REMOTE_CONTROL: String
     EMULATOR: String
     ROOT_APPS: String
+    BOOTLOADER_UNLOCKED: String
     APP_CLONER: String
     JAILBREAK: String
     SIMULATOR: String
