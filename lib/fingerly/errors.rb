@@ -158,11 +158,12 @@ module Fingerly
       @apple_status = parse_apple_status
     end
 
-    # +404+: no token is held for that event. Decide without the bits.
+    # +404+: no token is held for that call. Decide without the bits.
     def not_held? = status == 404 && code == NOT_HELD
 
-    # +409+: the token was already used, or this was a retry that is not the
-    # request the token was first used for.
+    # +409+: the call's token was already used, a read's by a read or a
+    # write's by a write, or this was a retry that is not the request the
+    # token was first used for.
     def spent? = status == 409 && code == SPENT
 
     # +409+: another call is using the token right now.

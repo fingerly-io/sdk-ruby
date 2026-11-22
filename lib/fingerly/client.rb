@@ -542,18 +542,18 @@ module Fingerly
   # Reads or writes Apple's two DeviceCheck bits for the device behind an iOS
   # event. Reached as +fingerly.device_check+.
   #
-  # Fingerly holds the DeviceCheck token that came with an identification for
-  # one hour, and spends it once: a read or a write, never both. Apple treats
-  # each token as single-use, so a flow that reads and then marks a device,
-  # such as a once-per-device free trial, reads on one identification and
-  # writes on the next.
+  # Fingerly holds the two DeviceCheck tokens that came with an identification
+  # for one hour, and spends each once: a read spends the read token, a write
+  # the write token. Apple treats each token as single-use, so a flow that
+  # reads and then marks a device, such as a once-per-device free trial, reads
+  # and writes with the same request ID.
   #
   # A +503+ (+device_check_unavailable+) or a transport failure is retried
   # with the same request; Apple lets a token be retried only that way, and
   # the API answers +409 device_check_spent+ to a retry that differs.
   #
   #   bits = fingerly.device_check.query(request_id)
-  #   fingerly.device_check.write(next_request_id, bit0: true) unless bits.bit0
+  #   fingerly.device_check.write(request_id, bit0: true) unless bits.bit0
   class DeviceCheck
     include Redacted
 
@@ -563,7 +563,7 @@ module Fingerly
       freeze
     end
 
-    # Spends the event's held token to read the device's two bits.
+    # Spends the event's held read token to read the device's two bits.
     #
     # @param request_id [String] the +request_id+ of an iOS identification
     #   made within the last hour
@@ -578,8 +578,8 @@ module Fingerly
       )
     end
 
-    # Spends the event's held token to set +bit0+, +bit1+ or both. A bit left
-    # nil keeps its value.
+    # Spends the event's held write token to set +bit0+, +bit1+ or both. A bit
+    # left nil keeps its value.
     #
     # @param request_id [String] the +request_id+ of an iOS identification
     #   made within the last hour

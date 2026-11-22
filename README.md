@@ -335,8 +335,9 @@ visitor's cookies and authorization header the same way.
 
 On iOS, Apple keeps two DeviceCheck bits per device for your developer team,
 and they survive a reinstall. When DeviceCheck is on for the project's Apple
-key, Fingerly holds the DeviceCheck token that came with an identification for
-one hour, and your backend spends it once:
+key, Fingerly holds the two DeviceCheck tokens that came with an
+identification for one hour, a read token and a write token, and your backend
+spends each once:
 
 ```ruby
 bits = fingerly.device_check.query(request_id)    # Fingerly::DeviceCheckBits
@@ -348,16 +349,16 @@ written = fingerly.device_check.write(request_id, bit0: true) # Fingerly::Device
 written.bit0    # true; a bit left out is nil, and keeps its value at Apple
 ```
 
-Apple treats each DeviceCheck token as single-use, so one event pays for one
-call: a read or a write, never both. A flow that checks and then marks a
-device, such as a once-per-device free trial, takes two identifications:
+Apple treats each DeviceCheck token as single-use, so one event supports one
+read and one write: a read spends the read token, a write the write token,
+and each pays for one Apple call. A flow that checks and then marks a device,
+such as a once-per-device free trial, does both on the identification that
+asks for the trial:
 
-1. Query on the identification that asks for the trial. If the bits say the
-   device already had one, refuse it.
+1. Query the bits. If they say the device already had one, refuse it.
 2. Otherwise grant the trial and record the grant in your own data.
-3. Write the bit on the next identification from that install, such as one
-   the app makes right after the grant. Until the write lands, your own record
-   of the grant is what stops a second trial.
+3. Write the bit with the same request ID. Until the write lands, your own
+   record of the grant is what stops a second trial.
 
 ```ruby
 # bit0 means "this device has had a free trial". The meaning is yours.
@@ -372,6 +373,7 @@ def start_trial(fingerly, account, request_id)
   return "offer-paid-plan" if bits&.bit0
 
   Trial.grant(account, device_marked: false)
+  mark_trial(fingerly, account, request_id)
   "granted"
 end
 
@@ -380,7 +382,8 @@ def mark_trial(fingerly, account, request_id)
   Trial.update(account, device_marked: true)
 rescue Fingerly::DeviceCheckError => e
   raise unless e.not_held? || e.spent?
-  # Keep device_marked false and write at the install's next identification.
+  # Keep device_marked false and write at a later identification from that
+  # install.
 end
 ```
 
@@ -403,8 +406,8 @@ anything is sent.
 The token may be retried only with the same request. After a `503` or a
 transport failure the token is kept, so the client sends the identical request
 again, up to three attempts in all; it retries nothing else. If you retry
-later yourself, repeat the same call with the same bits: a read after a failed
-write, or a write with other bits, answers `409 device_check_spent`. Apple asks
+later yourself, repeat the same call with the same bits: a second read, or a
+write with other bits, answers `409 device_check_spent`. Apple asks
 that DeviceCheck is never the only fraud check, and that users have a way to
 have the bits reset.
 
