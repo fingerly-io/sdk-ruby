@@ -20,13 +20,17 @@ module Fingerly
     attr_reader details: untyped
     attr_reader request_id: String?
     attr_reader retry_after: Integer?
+    attr_reader rate_limit_scope: String?
+
+    RATE_LIMIT_SCOPE_DAILY: String
 
     def initialize: (
       status: Integer,
       ?code: String?,
       ?details: untyped,
       ?request_id: String?,
-      ?retry_after: Integer?
+      ?retry_after: Integer?,
+      ?rate_limit_scope: String?
     ) -> void
     def event_not_found?: () -> bool
     def pending?: () -> bool
@@ -69,9 +73,13 @@ module Fingerly
   end
 
   class TimeoutError < Error
+    def initialize: (?String message, ?connected: bool) -> void
+    def connected?: () -> bool
   end
 
   class ConnectionError < Error
+    def initialize: (?String message, ?sent: bool) -> void
+    def sent?: () -> bool
   end
 
   module Signal
@@ -88,7 +96,6 @@ module Fingerly
     RESIDENTIAL_PROXY_MEDIUM_CONFIDENCE: String
     RESIDENTIAL_PROXY_HIGH_CONFIDENCE: String
     VPN_PUBLIC: String
-    VPN_TIMEZONE: String
     VPN_RELAY: String
     VPN_MOBILE: String
     VPN_OS_MISMATCH: String
@@ -103,6 +110,7 @@ module Fingerly
     ANYCAST_IP: String
     INCOGNITO: String
     BAD_BOT: String
+    AI_SPOOFED: String
     AUTOMATION: String
     FETCH_METADATA_MISSING: String
     WEB_TICKET_MISSING: String
@@ -110,6 +118,7 @@ module Fingerly
     ANTIDETECT_BROWSER: String
     VIRTUAL_MACHINE: String
     FINGERPRINT_SUPPRESSED: String
+    IDENTITY_OBFUSCATED: String
     PRIVACY_SETTINGS: String
     EMBEDDED_WEB_VIEW: String
     REMOTE_CONTROL: String
@@ -262,7 +271,58 @@ module Fingerly
     AI_BOT: String
     AUTOMATION: String
     SEARCH_CRAWLER: String
+    UNKNOWN: String
     ALL: Array[String]
+  end
+
+  module AiPurpose
+    TRAINING: String
+    SEARCH: String
+    USER_FETCH: String
+    AGENT: String
+    ALL: Array[String]
+  end
+
+  module AiRuntime
+    PROVIDER_CLOUD: String
+    HOSTED_BROWSER: String
+    USER_DEVICE: String
+    ALL: Array[String]
+  end
+
+  module AiVerificationMethod
+    SIGNATURE: String
+    IP_LIST: String
+    REVERSE_DNS: String
+    NONE: String
+    ALL: Array[String]
+  end
+
+  module AiVerificationResult
+    PASS: String
+    FAIL: String
+    NOT_ATTEMPTED: String
+    ALL: Array[String]
+  end
+
+  class AiVerification
+    attr_reader method: String
+    attr_reader result: String
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class AiAgent
+    attr_reader name: String
+    attr_reader provider: String
+    attr_reader purpose: String
+    attr_reader runtime: String
+    attr_reader declared: bool
+    attr_reader verification: AiVerification
+
+    def self.from: (untyped) -> AiAgent?
+    def initialize: (Hash[String, untyped]) -> void
+    def declared?: () -> bool
   end
 
   class EventTrigger
@@ -321,6 +381,7 @@ module Fingerly
     attr_reader occurred_at: Time?
     attr_reader suspect_score: Integer?
     attr_reader triggers: Array[EventTrigger]
+    attr_reader ai: AiAgent?
     attr_reader document: Hash[String, untyped]?
     attr_reader raw: Hash[String, untyped]
 
@@ -413,6 +474,7 @@ module Fingerly
 
     attr_reader events: Events
     attr_reader device_check: DeviceCheck
+    attr_reader agents: Agents
 
     def initialize: (
       secret_key: String,
@@ -426,8 +488,137 @@ module Fingerly
     def get: (String) -> Hash[String, untyped]
     def spend_device_check: (untyped, String, String?) -> Hash[String, untyped]
     def post_consume: (String) -> Hash[String, untyped]
+    def post_json: (String, String) -> Hash[String, untyped]
 
     def inspect: () -> String
+  end
+
+  class Agents
+    MAX_SIGHTINGS: Integer
+
+    def initialize: (Client) -> void
+    def report_sightings: (Array[AgentSightingInput]) -> AgentSightingsReport
+    def self.wire: (AgentSightingInput) -> Hash[String, untyped]
+
+    def inspect: () -> String
+  end
+
+  class AgentSightingInput
+    attr_reader user_agent: String
+    attr_reader client_ip: String
+    attr_reader host: String?
+    attr_reader request_method: String?
+    attr_reader signature: String?
+    attr_reader signature_input: String?
+    attr_reader signature_agent: String?
+    attr_reader count: Integer?
+
+    def initialize: (
+      user_agent: String,
+      client_ip: String,
+      ?host: String?,
+      ?request_method: String?,
+      ?signature: String?,
+      ?signature_input: String?,
+      ?signature_agent: String?,
+      ?count: Integer?
+    ) -> void
+    def to_h: () -> Hash[String, untyped]
+  end
+
+  class AgentSighting
+    attr_reader ttl: Integer
+    attr_reader visitor_kind: String
+    attr_reader agent: String?
+    attr_reader ai: AiAgent?
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class AgentSightingsReport
+    attr_reader rules_version: String
+    attr_reader items: Array[AgentSighting]
+    attr_reader raw: Hash[String, untyped]
+
+    def initialize: (Hash[String, untyped]) -> void
+  end
+
+  class AgentSightings
+    UNKNOWN: AgentSighting
+    DEFAULT_CAPACITY: Integer
+    MAX_CAPACITY: Integer
+    MAX_PENDING: Integer
+    FLUSH_ITEMS: Integer
+    FLUSH_BYTES: Integer
+    FLUSH_AFTER: Integer
+    FLUSH_DEADLINE: Integer
+    IN_FLIGHT_WAIT: Integer
+    TRAP_WAIT: Integer
+    MAX_TTL: Integer
+    MAX_HEADER_BYTES: Integer
+    MAX_COUNT: Integer
+    TICK: Float
+    AUTH_PAUSE: Integer
+    RATE_LIMIT_PAUSE: Integer
+    RETRY_AFTER_MIN: Integer
+    RETRY_AFTER_MAX: Integer
+    BACKOFF_MIN: Integer
+    BACKOFF_MAX: Integer
+    LOG_INTERVAL: Integer
+    WELL_KNOWN_PATHS: Array[String]
+
+    type request = Hash[String, untyped] | _HasEnv
+
+    interface _HasEnv
+      def env: () -> Hash[String, untyped]
+    end
+
+    attr_reader capacity: Integer
+
+    def initialize: (
+      secret_key: String,
+      client_ip: ^(ProxyRequest) -> String?,
+      ?capacity: Integer,
+      ?endpoint: String?,
+      ?allow_insecure_loopback: bool,
+      ?configure_http: (^(untyped) -> void)?,
+      ?logger: untyped,
+      ?clock: (^() -> Numeric)?
+    ) -> void
+    def lookup: (request) -> AgentSighting
+    def report: (request) -> nil
+    def flush: () -> nil
+    def close: () -> nil
+    def dropped_count: () -> Integer
+    def self.key: (
+      user_agent: String,
+      client_ip: String,
+      ?signature_agent: String,
+      ?signed: bool
+    ) -> String?
+    def self.canonical_ip: (untyped) -> String?
+    def self.monotonic: () -> Float
+    def self.trap_context?: () -> bool
+    def self.rate_limit_pause: (APIError) -> Integer
+    def self.outside_trap: (Array[Thread::Mutex]) { () -> void } -> nil
+
+    def inspect: () -> String
+
+    class Middleware
+      DEFAULT_CONTENT_TYPES: Array[String]
+
+      def initialize: (
+        untyped app,
+        AgentSightings sightings,
+        ?content_types: Array[String],
+        ?include_path_prefixes: Array[String],
+        ?exclude_path_prefixes: Array[String]
+      ) -> void
+      def call: (Hash[String, untyped]) -> untyped
+      def reported?: (String, untyped) -> bool
+
+      def inspect: () -> String
+    end
   end
 
   class DeviceCheck
@@ -447,7 +638,10 @@ module Fingerly
       ?page: Integer?,
       ?limit: Integer?,
       ?visitor: String?,
-      ?level: String?
+      ?level: String?,
+      ?kind: String?,
+      ?ai_provider: String?,
+      ?ai_purpose: String?
     ) -> EventPage
     DEFAULT_MAX_AGE_SECONDS: Integer
 
@@ -507,6 +701,8 @@ module Fingerly
     MISSING_ORIGIN_JSON: String
     ALLOWED_PLATFORMS: Regexp
     FORWARDED_CLIENT_HEADERS: Array[String]
+    SIGNATURE_HEADERS: Array[String]
+    MAX_SIGNATURE_HEADER_BYTES: Integer
     RELAYABLE_STATUS: Range[Integer]
     BODILESS: Array[Integer]
     RELAYED_HEADERS: Array[String]

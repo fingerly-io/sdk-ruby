@@ -49,13 +49,24 @@ module Fingerly
     #   itself.
     attr_reader :retry_after
 
+    # @return [String, nil] which limit refused the call, from the
+    #   +Fingerly-RateLimit-Scope+ header of a 429, such as +daily+ for an
+    #   organization's daily allowance; see {RATE_LIMIT_SCOPE_DAILY}
+    attr_reader :rate_limit_scope
+
+    # The +Fingerly-RateLimit-Scope+ of a daily allowance: it resets at the
+    # next UTC day.
+    RATE_LIMIT_SCOPE_DAILY = "daily"
+
     # @api private
-    def initialize(status:, code: nil, details: nil, request_id: nil, retry_after: nil)
+    def initialize(status:, code: nil, details: nil, request_id: nil, retry_after: nil,
+                   rate_limit_scope: nil)
       @status = status
       @code = code
       @details = details
       @request_id = request_id
       @retry_after = retry_after
+      @rate_limit_scope = rate_limit_scope
       described = "Fingerly API returned HTTP #{status}"
       super(code ? "#{described} (#{code})" : described)
     end
@@ -147,11 +158,12 @@ module Fingerly
       @apple_status = parse_apple_status
     end
 
-    # +404+: no token is held for that event. Decide without the bits.
+    # +404+: no token is held for that call. Decide without the bits.
     def not_held? = status == 404 && code == NOT_HELD
 
-    # +409+: the token was already used, or this was a retry that is not the
-    # request the token was first used for.
+    # +409+: the call's token was already used, a read's by a read or a
+    # write's by a write, or this was a retry that is not the request the
+    # token was first used for.
     def spent? = status == 409 && code == SPENT
 
     # +409+: another call is using the token right now.
@@ -187,10 +199,37 @@ module Fingerly
   # Raised when a request does not finish within its time limit.
   #
   # The deadline covers reading the response body, not only the headers.
-  class TimeoutError < Error; end
+  class TimeoutError < Error
+    # @api private
+    def initialize(message = "The Fingerly request timed out", connected: true)
+      super(message)
+      @connected = connected
+    end
+
+    # Whether a connection to the API was open when the time ran out. When it
+    # was, the request may have reached the server, so sending it again could
+    # do its work twice; when it was not, nothing was sent.
+    #
+    # @return [Boolean]
+    def connected? = @connected
+  end
 
   # Raised when the Fingerly API could not be reached at all.
   #
-  # A DNS failure, a refused connection or a TLS error arrives here.
-  class ConnectionError < Error; end
+  # A DNS failure, a refused connection or a TLS error arrives here, and so
+  # does a connection lost or a response cut short once the request was sent.
+  class ConnectionError < Error
+    # @api private
+    def initialize(message = "Could not reach the Fingerly API", sent: false)
+      super(message)
+      @sent = sent
+    end
+
+    # Whether the whole request had been written when the connection failed.
+    # When it had, the server may have acted on it, so sending it again could
+    # do its work twice; when it had not, the server never saw all of it.
+    #
+    # @return [Boolean]
+    def sent? = @sent
+  end
 end

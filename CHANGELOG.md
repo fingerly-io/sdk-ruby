@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.5.0
+
+- Events read the AI agent behind them: `Fingerly::Event#ai` is a
+  `Fingerly::AiAgent` with `name`, `provider`, `purpose`, `runtime`,
+  `declared?` and `verification` (`method`, `result`) when `visitor_kind` is
+  `ai_bot`, and `nil` otherwise. New constants `Fingerly::AiPurpose`,
+  `Fingerly::AiRuntime`, `Fingerly::AiVerificationMethod` and
+  `Fingerly::AiVerificationResult`, and the `ai_spoofed` and
+  `identity_obfuscated` signals. `Fingerly::Signal::VPN_TIMEZONE` is gone:
+  the API no longer sends it.
+- `events.list` filters on `kind:`, `ai_provider:` and `ai_purpose:`.
+- Added `Fingerly::AgentSightings` and its Rack middleware: they report the
+  requests your server served, so AI crawlers that never run JavaScript are
+  counted, and `lookup` answers from memory what sent a request. Reports go
+  out from one background thread, never from a request, and every failure
+  leaves requests served as usual. `fingerly.agents.report_sightings` is the
+  call underneath.
+- The proxy forwards the Web Bot Auth `Signature`, `Signature-Input` and
+  `Signature-Agent` headers, each up to 4096 bytes.
+- `APIError#rate_limit_scope` names the limit behind a `429`.
+- Every field of `Fingerly::AiAgent` and `Fingerly::AiVerification` is now
+  always set, as the API sends it, so `event.ai.verification.result` needs no
+  nil check. An event whose `ai` lacks one raises `Fingerly::Error` when it
+  is read, rather than a `NoMethodError` later in your code. In an agent
+  sightings answer, such an item reads as `Fingerly::AgentSightings::UNKNOWN`
+  and the other items of the answer are still remembered.
+- A response field of another JSON type than documented now reads as absent
+  (`nil`, `0` or empty) instead of being passed through, and an event list
+  whose rows are not events raises `Fingerly::Error`.
+- `AgentSightings#close` and `#flush` work inside a signal handler such as
+  `trap("TERM")`, which they hold up 12 seconds at most and never hang, even
+  when the signal interrupts a report in progress. A forked worker that
+  closes no longer sends the reports its parent still holds, and its
+  `dropped_count` counts only its own drops.
+- `AgentSightings#flush` also waits for a send the background thread starts
+  while it runs, so nothing is still pending when it returns.
+- A `client_ip` callback or logger that raises `NotImplementedError`, another
+  `ScriptError` or `SystemStackError` is contained like any other failure:
+  the agent sightings middleware leaves the response alone, and the proxy
+  answers its own `500`.
+- The middleware's `content_types:` are matched as media types, so a
+  configured `"text/html; charset=utf-8"` matches `text/html` responses.
+- Agent sightings measure every limit on the value as sent, UTF-8 with an
+  invalid byte sequence as U+FFFD, so no report can carry a field the API
+  refuses: a user agent or method over 4096 bytes is not reported, and a
+  Web Bot Auth header or `Host` over 4096 bytes is left out.
+- `Fingerly::VisitorKind::UNKNOWN` names the answer for a reported request
+  the server could not use. It comes with a `ttl` of 0, so it is never
+  remembered and that request stays `UNKNOWN`; the rest of the batch is
+  answered as usual. A `422` now means no item in the batch was usable.
+- After a `429`, agent sightings stop reporting for at least 1 second and at
+  most 24 hours, whatever `Retry-After` said, so a huge value cannot end
+  reporting for the life of the process.
+- The README and `Fingerly::DeviceCheck` describe one read and one write
+  token per identification: a check-then-mark flow reads and writes on the
+  same request ID.
+
 ## 0.4.1
 
 - Each `Fingerly::AttestSkippedReason` constant documents when the iOS and

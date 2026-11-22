@@ -128,7 +128,9 @@ class EventsTest < Minitest::Test
     FakeAPI.run(FakeAPI.json(200, EMPTY_PAGE)) do |api|
       client(api).events.list(
         from: Time.new(2026, 1, 2, 3, 4, 5, "+02:00"),
-        page: 2, limit: 25, level: "high", visitor: "v 1"
+        page: 2, limit: 25, level: "high", visitor: "v 1",
+        kind: Fingerly::VisitorKind::AI_BOT, ai_provider: "OpenAI",
+        ai_purpose: Fingerly::AiPurpose::USER_FETCH
       )
 
       query = api.requests.first.query
@@ -138,6 +140,9 @@ class EventsTest < Minitest::Test
       assert_includes query, "limit=25"
       assert_includes query, "level=high"
       assert_includes query, "visitor=v+1"
+      assert_includes query, "kind=ai_bot"
+      assert_includes query, "ai_provider=OpenAI"
+      assert_includes query, "ai_purpose=user_fetch"
       refute_includes query, "to="
     end
   end

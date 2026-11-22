@@ -34,7 +34,6 @@ module Fingerly
     RESIDENTIAL_PROXY_MEDIUM_CONFIDENCE = "residential_proxy_medium_confidence"
     RESIDENTIAL_PROXY_HIGH_CONFIDENCE = "residential_proxy_high_confidence"
     VPN_PUBLIC = "vpn_public"
-    VPN_TIMEZONE = "vpn_timezone"
     VPN_RELAY = "vpn_relay"
     VPN_MOBILE = "vpn_mobile"
     VPN_OS_MISMATCH = "vpn_os_mismatch"
@@ -51,6 +50,7 @@ module Fingerly
     # Detectors only a browser can produce.
     INCOGNITO = "incognito"
     BAD_BOT = "bad_bot"
+    AI_SPOOFED = "ai_spoofed"
     AUTOMATION = "automation"
     FETCH_METADATA_MISSING = "fetch_metadata_missing"
     WEB_TICKET_MISSING = "web_ticket_missing"
@@ -58,6 +58,7 @@ module Fingerly
     ANTIDETECT_BROWSER = "antidetect_browser"
     VIRTUAL_MACHINE = "virtual_machine"
     FINGERPRINT_SUPPRESSED = "fingerprint_suppressed"
+    IDENTITY_OBFUSCATED = "identity_obfuscated"
     PRIVACY_SETTINGS = "privacy_settings"
     EMBEDDED_WEB_VIEW = "embedded_web_view"
     REMOTE_CONTROL = "remote_control"
@@ -105,12 +106,13 @@ module Fingerly
       HIGH_ACTIVITY, TAMPERING, DEVICE_FARM, DEVELOPER_TOOLS, GEO_MISMATCH, DEVICE_INCONSISTENT,
       TOR, PROXY, RESIDENTIAL_PROXY, RESIDENTIAL_PROXY_LOW_CONFIDENCE,
       RESIDENTIAL_PROXY_MEDIUM_CONFIDENCE, RESIDENTIAL_PROXY_HIGH_CONFIDENCE, VPN_PUBLIC,
-      VPN_TIMEZONE, VPN_RELAY, VPN_MOBILE, VPN_OS_MISMATCH, VPN_LOW_CONFIDENCE,
+      VPN_RELAY, VPN_MOBILE, VPN_OS_MISMATCH, VPN_LOW_CONFIDENCE,
       VPN_MEDIUM_CONFIDENCE, VPN_HIGH_CONFIDENCE, IP_BLOCKLIST_EMAIL_SPAM,
       IP_BLOCKLIST_ATTACK_SOURCE, IP_ABUSER, DATACENTER_IP, BOGON_IP, ANYCAST_IP, INCOGNITO,
-      BAD_BOT, AUTOMATION, FETCH_METADATA_MISSING, WEB_TICKET_MISSING, WEB_TICKET_INVALID,
-      ANTIDETECT_BROWSER, VIRTUAL_MACHINE, FINGERPRINT_SUPPRESSED, PRIVACY_SETTINGS,
-      EMBEDDED_WEB_VIEW, REMOTE_CONTROL, EMULATOR, ROOT_APPS, APP_CLONER, JAILBREAK, SIMULATOR,
+      BAD_BOT, AI_SPOOFED, AUTOMATION, FETCH_METADATA_MISSING, WEB_TICKET_MISSING,
+      WEB_TICKET_INVALID, ANTIDETECT_BROWSER, VIRTUAL_MACHINE, FINGERPRINT_SUPPRESSED,
+      IDENTITY_OBFUSCATED, PRIVACY_SETTINGS, EMBEDDED_WEB_VIEW, REMOTE_CONTROL, EMULATOR,
+      ROOT_APPS, APP_CLONER, JAILBREAK, SIMULATOR,
       FRIDA, MITM_ATTACK, ACTIVE_CALL, ATTESTATION_MISSING, ATTESTATION_DOWNGRADE,
       REPEATED_REINSTALL, DEVICE_ACTIVITY_HIGH, DEVICE_ACTIVITY_VERY_HIGH,
       PLAY_DEVICE_INTEGRITY_FAILED, PLAY_APP_UNRECOGNIZED, ATTESTATION_FAILED, REPORT_INCOMPLETE,
@@ -286,13 +288,72 @@ module Fingerly
     ALL = [DESKTOP, MOBILE, TABLET, SERVER].freeze
   end
 
-  # What is behind a submission: {Event}'s +visitor_kind+.
+  # What is behind a submission: {Event}'s and {AgentSighting}'s +visitor_kind+.
   module VisitorKind
     HUMAN = "human"
     AI_BOT = "ai_bot"
     AUTOMATION = "automation"
     SEARCH_CRAWLER = "search_crawler"
+    # Only in an agent sightings answer: a request the server could not use;
+    # ttl 0, never remembered.
+    UNKNOWN = "unknown"
 
-    ALL = [HUMAN, AI_BOT, AUTOMATION, SEARCH_CRAWLER].freeze
+    ALL = [HUMAN, AI_BOT, AUTOMATION, SEARCH_CRAWLER, UNKNOWN].freeze
+  end
+
+  # What an AI agent's operator says its traffic is for: {AiAgent}'s
+  # +purpose+. The API can add values, so keep an +else+ branch.
+  module AiPurpose
+    # Collecting content to train models.
+    TRAINING = "training"
+    # Indexing for an AI answer or search product.
+    SEARCH = "search"
+    # Reading a page a person asked an assistant to read.
+    USER_FETCH = "user_fetch"
+    # Driving a browser on a person's behalf.
+    AGENT = "agent"
+
+    ALL = [TRAINING, SEARCH, USER_FETCH, AGENT].freeze
+  end
+
+  # Where an AI agent runs: {AiAgent}'s +runtime+. The API can add values, so
+  # keep an +else+ branch.
+  module AiRuntime
+    # The operator's own infrastructure.
+    PROVIDER_CLOUD = "provider_cloud"
+    # A third party's cloud browser.
+    HOSTED_BROWSER = "hosted_browser"
+    # A person's own browser.
+    USER_DEVICE = "user_device"
+
+    ALL = [PROVIDER_CLOUD, HOSTED_BROWSER, USER_DEVICE].freeze
+  end
+
+  # How an AI agent's claimed identity was checked: {AiVerification}'s
+  # +method+. The API can add values, so keep an +else+ branch.
+  module AiVerificationMethod
+    # A signed request.
+    SIGNATURE = "signature"
+    # The operator's published address ranges.
+    IP_LIST = "ip_list"
+    # A reverse lookup confirmed forward.
+    REVERSE_DNS = "reverse_dns"
+    # No check was made.
+    NONE = "none"
+
+    ALL = [SIGNATURE, IP_LIST, REVERSE_DNS, NONE].freeze
+  end
+
+  # What checking an AI agent's identity found: {AiVerification}'s +result+.
+  # The API can add values, so keep an +else+ branch.
+  module AiVerificationResult
+    # The claim held.
+    PASS = "pass"
+    # The claim was checked and did not hold.
+    FAIL = "fail"
+    # No check was made.
+    NOT_ATTEMPTED = "not_attempted"
+
+    ALL = [PASS, FAIL, NOT_ATTEMPTED].freeze
   end
 end

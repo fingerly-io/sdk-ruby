@@ -910,6 +910,66 @@ class ProxyTest < Minitest::Test
 
       assert_equal 200, accepted.status
       assert_equal "https://app.example", accepted.headers["access-control-allow-origin"]
+      # The agent's browser adds the Web Bot Auth headers itself and never preflights them.
+      refute_includes pre.headers["access-control-allow-headers"], "signature"
+    end
+  end
+
+  SIGNATURE = "sig1=:dGVzdC1zaWduYXR1cmU=:"
+  SIGNATURE_INPUT = 'sig1=("@authority" "signature-agent");created=1735689600;' \
+                    'keyid="k1";alg="ed25519";tag="web-bot-auth"'
+  SIGNATURE_AGENT = '"https://chatgpt.com"'
+
+  def signed_env(signature, agent)
+    {
+      "HTTP_X_API_KEY" => PUBLIC_KEY,
+      "HTTP_HOST" => "shop.example",
+      "HTTP_X_CUSTOM_TOKEN" => "app-header",
+      "HTTP_SIGNATURE" => signature,
+      "HTTP_SIGNATURE_INPUT" => SIGNATURE_INPUT,
+      "HTTP_SIGNATURE_AGENT" => agent
+    }
+  end
+
+  def test_forwards_web_bot_auth_headers_unchanged
+    handler = lambda do |_req, res|
+      res.status = 200
+      res["content-type"] = "application/json"
+      res["x-request-id"] = "req-1"
+      res["fingerly-balance-micros"] = "100"
+      res.body = "{\"request_id\":\"req-1\"}"
+    end
+    FakeAPI.run(handler) do |api|
+      res = post(api, PATH, "{}", **signed_env(SIGNATURE, SIGNATURE_AGENT))
+
+      assert_equal 200, res.status
+      assert_equal "req-1", res.headers["x-request-id"]
+      assert_equal "no-store", res.headers["cache-control"]
+      assert_nil res.headers["fingerly-balance-micros"]
+      assert_equal "{\"request_id\":\"req-1\"}", res.body
+      sent = api.requests.first
+
+      assert_equal SIGNATURE, sent.header("signature")
+      assert_equal SIGNATURE_INPUT, sent.header("signature-input")
+      assert_equal SIGNATURE_AGENT, sent.header("signature-agent")
+      assert_equal "shop.example", sent.header("x-fingerly-host")
+      assert_nil sent.header("x-custom-token")
+    end
+  end
+
+  def test_drops_a_web_bot_auth_header_over_4096_bytes
+    at_cap = "\"https://#{"a" * (4096 - 10)}\""
+
+    assert_equal 4096, at_cap.bytesize
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      res = post(api, PATH, "{}", **signed_env("sig1=:#{"A" * 4097}:", at_cap))
+
+      assert_equal 200, res.status
+      sent = api.requests.first
+
+      assert_nil sent.header("signature")
+      assert_equal SIGNATURE_INPUT, sent.header("signature-input")
+      assert_equal at_cap, sent.header("signature-agent")
     end
   end
 

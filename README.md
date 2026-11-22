@@ -36,7 +36,7 @@ device behind each session and scores how suspicious it is.
 2. **Install.** Add it to your `Gemfile`:
 
    ```ruby
-   gem "fingerly", "~> 0.4.1"
+   gem "fingerly", "~> 0.5.0"
    ```
 
 3. **Read an event.**
@@ -91,8 +91,9 @@ Full guide: [docs.fingerly.io/docs/sdks/ruby](https://docs.fingerly.io/docs/sdks
 | Read or write an iOS device's DeviceCheck bits | `device_check.query` / `device_check.write` | [DeviceCheck bits](#devicecheck-bits) |
 | Check a webhook delivery is genuine | `Fingerly::Webhooks.verify` and `.parse` | [Verify webhooks](#verify-webhooks) |
 | Keep the browser SDK first-party, away from content blockers | `Fingerly::Proxy`, a Rack middleware | [First-party proxy](#first-party-proxy-same-origin) |
+| See AI crawlers that never run your pages' JavaScript, and tell them apart | `Fingerly::AgentSightings` and its Rack middleware | [Agent sightings](#agent-sightings) |
 
-On this page: [Read events](#read-events) · [DeviceCheck bits](#devicecheck-bits) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
+On this page: [Read events](#read-events) · [DeviceCheck bits](#devicecheck-bits) · [Verify webhooks](#verify-webhooks) · [First-party proxy](#first-party-proxy-same-origin) · [Agent sightings](#agent-sightings) · [Threads, fibers and deadlines](#threads-fibers-and-deadlines) · [Requirements](#requirements) · [Development](#development-and-release-preparation) · [Documentation](#documentation) · [Help](#help) · [Licence](#licence)
 
 ## Read events
 
@@ -127,6 +128,33 @@ adds later is reachable without a gem upgrade.
 `event.project_id` is the UUID string of the Fingerly project the event
 belongs to, on both `events.get` and `events.list` rows; it is `nil` when an
 older server does not send it.
+
+`event.ai` is set only when `event.visitor_kind` is
+`Fingerly::VisitorKind::AI_BOT`, and `nil` otherwise: a `Fingerly::AiAgent`
+with the agent's `name`, `provider`, `purpose`, `runtime`, `declared?` and
+`verification` (`method`, `result`). The agent is named by a Web Bot Auth
+signature when the request carried one, otherwise by its user agent.
+`verification` says how far that was checked:
+`Fingerly::AiVerificationMethod::SIGNATURE` (the operator's published key
+signed the request) or `Fingerly::AiVerificationMethod::IP_LIST` (the address
+is inside the operator's published ranges), with result
+`Fingerly::AiVerificationResult::PASS`, `Fingerly::AiVerificationResult::FAIL`
+(the name was borrowed), or `Fingerly::AiVerificationResult::NOT_ATTEMPTED`
+with method `Fingerly::AiVerificationMethod::NONE` (the operator publishes
+nothing to check against, or it could not be checked; the name is then only
+the client's claim). Every field of `event.ai` is always set, `verification`
+included, so `event.ai.verification.result` needs no nil check once
+`event.ai` is there; an answer whose `ai` lacks one raises `Fingerly::Error`
+when it is read. Only clients that run the Fingerly SDK produce events, so
+crawlers that do not run JavaScript never appear. `events.list` filters on `kind:`,
+`ai_provider:` (exact and case-sensitive, such as `"OpenAI"`) and `ai_purpose:`.
+
+```ruby
+fetches = fingerly.events.list(
+  kind: Fingerly::VisitorKind::AI_BOT,
+  ai_purpose: Fingerly::AiPurpose::USER_FETCH
+)
+```
 
 ### Read an event you just identified
 
@@ -176,7 +204,11 @@ missing from the module's frozen `ALL` array.
 | `Fingerly::Platform` | `Event#platform` | `WEB`, `ANDROID`, `IOS` |
 | `Fingerly::AnonymityNetwork` | `Event#anonymity_network` | `TOR`, `RELAY`, `VPN`, `PROXY`, `HOSTING` |
 | `Fingerly::DeviceKind` | `Event#device_kind` | `DESKTOP`, `MOBILE`, `TABLET`, `SERVER` |
-| `Fingerly::VisitorKind` | `Event#visitor_kind` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER` |
+| `Fingerly::VisitorKind` | `Event#visitor_kind`, `events.list(kind:)`, `AgentSighting#visitor_kind` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER`, and `UNKNOWN` (only in an agent sightings answer: a request the server could not use) |
+| `Fingerly::AiPurpose` | `AiAgent#purpose`, `events.list(ai_purpose:)` | `TRAINING`, `SEARCH`, `USER_FETCH`, `AGENT` |
+| `Fingerly::AiRuntime` | `AiAgent#runtime` | `PROVIDER_CLOUD`, `HOSTED_BROWSER`, `USER_DEVICE` |
+| `Fingerly::AiVerificationMethod` | `AiVerification#method` | `SIGNATURE`, `IP_LIST`, `REVERSE_DNS`, `NONE` |
+| `Fingerly::AiVerificationResult` | `AiVerification#result` | `PASS`, `FAIL`, `NOT_ATTEMPTED` |
 | `Fingerly::AttestationState` | `event.document["attestation"]["state"]` | `ATTESTED`, `NOT_ATTESTED`, `FAILED` |
 | `Fingerly::AttestationStatus` | `event.document["attestation"]["status"]` | `VERIFIED`, `INDETERMINATE`, `INVALID`, `ABSENT`, `UNCONFIGURED` |
 | `Fingerly::AttestSkippedReason` | `event.document["attestation"]["attest_skipped"]` | `NOT_OFFERED`, `UNSUPPORTED`, `CHALLENGE_UNAVAILABLE`, `KEY_ERROR`, `TIMEOUT`, `BACKOFF`, `INSTALL_UNAVAILABLE` |
@@ -303,8 +335,9 @@ visitor's cookies and authorization header the same way.
 
 On iOS, Apple keeps two DeviceCheck bits per device for your developer team,
 and they survive a reinstall. When DeviceCheck is on for the project's Apple
-key, Fingerly holds the DeviceCheck token that came with an identification for
-one hour, and your backend spends it once:
+key, Fingerly holds the two DeviceCheck tokens that came with an
+identification for one hour, a read token and a write token, and your backend
+spends each once:
 
 ```ruby
 bits = fingerly.device_check.query(request_id)    # Fingerly::DeviceCheckBits
@@ -316,16 +349,16 @@ written = fingerly.device_check.write(request_id, bit0: true) # Fingerly::Device
 written.bit0    # true; a bit left out is nil, and keeps its value at Apple
 ```
 
-Apple treats each DeviceCheck token as single-use, so one event pays for one
-call: a read or a write, never both. A flow that checks and then marks a
-device, such as a once-per-device free trial, takes two identifications:
+Apple treats each DeviceCheck token as single-use, so one event supports one
+read and one write: a read spends the read token, a write the write token,
+and each pays for one Apple call. A flow that checks and then marks a device,
+such as a once-per-device free trial, does both on the identification that
+asks for the trial:
 
-1. Query on the identification that asks for the trial. If the bits say the
-   device already had one, refuse it.
+1. Query the bits. If they say the device already had one, refuse it.
 2. Otherwise grant the trial and record the grant in your own data.
-3. Write the bit on the next identification from that install, such as one
-   the app makes right after the grant. Until the write lands, your own record
-   of the grant is what stops a second trial.
+3. Write the bit with the same request ID. Until the write lands, your own
+   record of the grant is what stops a second trial.
 
 ```ruby
 # bit0 means "this device has had a free trial". The meaning is yours.
@@ -340,6 +373,7 @@ def start_trial(fingerly, account, request_id)
   return "offer-paid-plan" if bits&.bit0
 
   Trial.grant(account, device_marked: false)
+  mark_trial(fingerly, account, request_id)
   "granted"
 end
 
@@ -348,7 +382,8 @@ def mark_trial(fingerly, account, request_id)
   Trial.update(account, device_marked: true)
 rescue Fingerly::DeviceCheckError => e
   raise unless e.not_held? || e.spent?
-  # Keep device_marked false and write at the install's next identification.
+  # Keep device_marked false and write at a later identification from that
+  # install.
 end
 ```
 
@@ -371,8 +406,8 @@ anything is sent.
 The token may be retried only with the same request. After a `503` or a
 transport failure the token is kept, so the client sends the identical request
 again, up to three attempts in all; it retries nothing else. If you retry
-later yourself, repeat the same call with the same bits: a read after a failed
-write, or a write with other bits, answers `409 device_check_spent`. Apple asks
+later yourself, repeat the same call with the same bits: a second read, or a
+write with other bits, answers `409 device_check_spent`. Apple asks
 that DeviceCheck is never the only fraud check, and that users have a way to
 have the bits reset.
 
@@ -497,8 +532,8 @@ then sees a path that is not its own and answers `404`.
 | Credentials upstream | Every request carries the proxy key as `X-Fingerly-Proxy-Key` and the caller's public key as `X-API-Key`, never a secret key. |
 | Origin or platform | Requests without either `Origin` or a validated native `X-Fingerly-SDK-Platform` header (`ios`, `android`, `react-native`, `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`, `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`, `kotlin-multiplatform`) are rejected locally with `400` (`missing_origin`), and `x-fingerly-origin` is never synthesized from `Host`, `Referer` or the request URL. A request is forwarded on one channel only: with an `Origin` the proxy sends `x-fingerly-origin` and drops the platform header, and without one it sends the validated platform. |
 | Body size | Bodies over 1 MiB get `413`, enforced while reading rather than after buffering. |
-| Forwarded headers | All incoming `x-fingerly-*`, `cookie` and `authorization` headers are stripped, restoring only a validated `x-fingerly-sdk-platform` (when there is no `Origin`) alongside `x-fingerly-host`, `idempotency-key`, `sec-fetch-*` and `sec-ch-ua-*`. |
-| Proxy identity | The proxy reports itself upstream as `ruby/0.4.1` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
+| Forwarded headers | All incoming `x-fingerly-*`, `cookie` and `authorization` headers are stripped, restoring only a validated `x-fingerly-sdk-platform` (when there is no `Origin`) alongside `x-fingerly-host`, `idempotency-key`, `sec-fetch-*`, `sec-ch-ua-*` and the Web Bot Auth `signature`, `signature-input` and `signature-agent` (each dropped when over 4096 bytes). |
+| Proxy identity | The proxy reports itself upstream as `ruby/0.5.0` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
 | Fingerly unreachable | The visitor gets a gateway error rather than your application's `500`. |
 | Deadline passes | `504 Gateway timeout` when `timeout:` (5 seconds by default) passes. |
 | Any other upstream failure | `502 Bad gateway`, whether the connection was refused or reset, the name did not resolve, or the answer was malformed, cut short or over 4 MiB. Redirects are never followed, and an upstream redirect or a status outside `200` to `599` is answered `502` as well. |
@@ -536,6 +571,150 @@ dashboard issued rather than inventing one: blockers look for words such as
 `fingerprint`, `tracking` and `analytics` in a path.
 
 </details>
+
+## Agent sightings
+
+Most AI crawlers and fetchers, such as GPTBot or ClaudeBot, read your pages
+without running their JavaScript, so the browser SDK never sees them.
+`Fingerly::AgentSightings` reports the requests your server served to
+Fingerly, which answers what sent each one: a person's browser, an AI agent,
+other automation or a search crawler. The requests are then counted in the
+dashboard, and your code can ask for the answer.
+
+The SDK forwards raw input and remembers the answers; it never judges a user
+agent or an address itself. An AI agent's identity starts from what the
+request claims, and `answer.ai.verification` says how far that claim was
+checked: `PASS` means the operator's key or published ranges confirmed it,
+`FAIL` means the name was borrowed, and `NOT_ATTEMPTED` leaves it the
+client's claim.
+
+Build one per process at start-up with a secret key and the same kind of
+`client_ip` callback the [proxy](#first-party-proxy-same-origin) takes, then
+mount its middleware first in the stack, so it also sees `/robots.txt` and the
+other files your server answers itself:
+
+```ruby
+# config/initializers/fingerly.rb
+FINGERLY_SIGHTINGS = Fingerly::AgentSightings.new(
+  secret_key: ENV.fetch("FINGERLY_SECRET_KEY"),
+  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
+)
+
+Rails.application.config.middleware.insert_before 0,
+                                                  Fingerly::AgentSightings::Middleware,
+                                                  FINGERLY_SIGHTINGS
+```
+
+```ruby
+# config.ru, for Sinatra, Hanami or a bare Rack app
+require "fingerly"
+require_relative "app" # defines MyApp, your Sinatra or Rack application
+
+SIGHTINGS = Fingerly::AgentSightings.new(
+  secret_key: ENV.fetch("FINGERLY_SECRET_KEY"),
+  client_ip: ->(request) { request.header("CF-Connecting-IP") || request.peer_host }
+)
+
+use Fingerly::AgentSightings::Middleware, SIGHTINGS
+run MyApp
+```
+
+`lookup` answers from memory what the server said about this exact request
+before, and `Fingerly::AgentSightings::UNKNOWN` when it has not said anything
+yet. It never waits on the network and never raises. Treat `UNKNOWN` as
+"serve as usual":
+
+```ruby
+class ArticlesController < ApplicationController
+  def show
+    @article = Article.find(params[:id])
+    answer = FINGERLY_SIGHTINGS.lookup(request)
+    return if answer == Fingerly::AgentSightings::UNKNOWN
+
+    # Your policy: here, a crawler collecting training data gets the summary.
+    @summary_only = answer.visitor_kind == Fingerly::VisitorKind::AI_BOT &&
+                    answer.ai&.purpose == Fingerly::AiPurpose::TRAINING
+  end
+end
+```
+
+An answer is an `AgentSighting` with `visitor_kind` (see `VisitorKind`),
+`agent` (such as `GPTBot` or `Googlebot`, when the server knows it) and, for
+an AI agent, `ai` with `name`, `provider`, `purpose` (`AiPurpose`), `runtime`
+(`AiRuntime`) and `verification` (`AiVerificationMethod`,
+`AiVerificationResult`). The first request from a new visitor is answered
+`UNKNOWN`: the server is asked after the response, and later requests get its
+answer.
+
+### What is reported
+
+By default the middleware reports every response with a `Content-Type` of
+`text/html` or `application/xhtml+xml`, and every request for `/robots.txt`,
+`/llms.txt` and `/llms-full.txt`, whatever the status. Static assets, API
+routes and health checks are left out. What is reported is decided by your
+own response and path, never by the visitor's user agent, address or headers.
+
+```ruby
+use Fingerly::AgentSightings::Middleware, SIGHTINGS,
+    content_types: %w[text/html application/xhtml+xml text/markdown], # replaces the default
+    include_path_prefixes: ["/feed"], # reported whatever their content type
+    exclude_path_prefixes: ["/admin"] # never reported; wins over everything
+```
+
+Paths are matched against `PATH_INFO`, as the proxy does. The middleware
+reports after your application answered, in memory, so it never delays a
+response, and nothing it does can fail one. A framework that does not run
+Rack middleware can call `SIGHTINGS.report(env)` itself after its response.
+
+| Sent for each request | Never sent, never logged |
+| --- | --- |
+| `User-Agent` as received (a value over 4096 bytes is not reported at all, and stays `UNKNOWN`), the address `client_ip` returned (a request without one is not reported), `Host` (left out when over 4096 bytes), the method (a request whose method is over 4096 bytes is not reported), the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers (each left out when over 4096 bytes), and how many times the same request was seen since the last report, at most 1,000,000. Values go as UTF-8, an invalid byte sequence as U+FFFD, and the limits count the bytes sent | The path, the query string, cookies, `Authorization`, any other header, the request body and your response |
+
+### Memory, flushing and failures
+
+| Rule | Behaviour |
+| --- | --- |
+| Answers remembered | At most `capacity:` (4096 by default; a larger value than 65536 is read as 65536), least recently used dropped first. A few hundred bytes each: about 1.5 MB at the default. Each expires after the `ttl` the server gave it; a signed request is never remembered, and a new `rules_version` drops them all. |
+| Pending reports | At most 1000, the batch being sent included. Repeats of one request fold into one item with a count, signed requests excepted. When full, a new request is not reported and stays `UNKNOWN`; `dropped_count` counts them. |
+| Flushing | One background thread per process sends up to 200 items when 200 are pending, when their fields reach 64 KiB, or 2 seconds after the oldest, one flush at a time, each within 5 seconds. A forked worker starts its own thread and reports only its own requests. |
+| `429` | The batch is kept and nothing is sent until `Retry-After` has passed, or the next UTC day for the daily allowance: at least 1 second and at most 24 hours, whatever `Retry-After` said. |
+| `401` / `403` | The batch is dropped, nothing is sent for 60 seconds, and the refused key is logged at most once a minute. |
+| `503`, or no answer at all | The batch is kept, as old as when it was first seen, and sent again after 1, 2, 4 and up to 60 seconds. |
+| Timed out after sending | The batch is dropped, because the server may already have counted it. |
+| An item the server could not use | Answered `VisitorKind::UNKNOWN` with a `ttl` of 0, so it is never remembered and that request stays `UNKNOWN`; the rest of the batch is answered as usual, and nothing is logged. |
+| `422` | No item in the batch was usable. The batch is dropped and logged at most once a minute. |
+| Any other status, `500`, `502` and `504` included | The batch is dropped and logged at most once a minute. |
+
+In every case requests are served as usual and `lookup` keeps answering from
+memory or `UNKNOWN`. Log lines go to `logger:` when you pass one and to
+standard error otherwise, and never carry a request's fields.
+
+`flush` sends what is pending now and waits for it, for runtimes that end
+between invocations. `close` makes one last flush and stops the thread, for a
+clean shutdown:
+
+```ruby
+at_exit { SIGHTINGS.close }
+```
+
+Register it next to where you build the instance. Under Puma, clustered or
+not, and Unicorn with `preload_app`, every forked worker inherits the hook and
+sends its own pending reports when it stops gracefully, and a worker never
+sends what its parent holds. Unicorn stops gracefully on `QUIT`; on `TERM` or
+`INT` it ends its workers at once, without running exit hooks, so what they
+held is lost. `close` waits up to 6 seconds for a batch already in flight,
+then sends what is left one batch at a time, each within 5 seconds, and stops
+at the first that fails. `close` and `flush` never raise, may be called more
+than once or from several threads at once, and also work inside a signal
+handler such as `trap("TERM")`, which they hold up 12 seconds at most.
+
+`fingerly.agents.report_sightings(items)` is the call underneath, for building
+your own batching: it takes up to 200 `Fingerly::AgentSightingInput` values
+and returns an `AgentSightingsReport` with `rules_version` and one
+`AgentSighting` per item, in order; an item of another shape than the API
+documents is `Fingerly::AgentSightings::UNKNOWN`. A `429` raises an `APIError` with
+`retry_after` and `rate_limit_scope` (`APIError::RATE_LIMIT_SCOPE_DAILY` for
+the daily allowance).
 
 ## Threads, fibers and deadlines
 
@@ -640,7 +819,9 @@ is refused.
 `Client` holds the connection and the options; `Events` owns the reads and the
 list filters, and `Event`, `EventPage` and `EventTrigger` are what they speak
 in. `Webhooks` verifies signatures. `Proxy` holds every proxy decision, with
-`ProxyRequest` as the shape `client_ip` is given. `Config` validates every
+`ProxyRequest` as the shape `client_ip` is given. `AgentSightings` holds the
+answer cache, the pending buffer and the background flusher, and its
+`Middleware` decides which responses are reported. `Config` validates every
 caller-supplied option before any network access, and `Transport` is the one
 place that knows how to bound an exchange and reuse a socket.
 

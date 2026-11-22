@@ -30,6 +30,10 @@ module Fingerly
     #   written once per event
     attr_reader :device_check
 
+    # @return [Agents] reports of the requests your server served, answered
+    #   with what sent each one. {AgentSightings} uses it for you.
+    attr_reader :agents
+
     # @param secret_key [String] a server-only key,
     #   +fly_sk_{environment}_…+, whose prefix names the environment read
     # @param endpoint [String, nil] overrides the Fingerly API origin: a bare
@@ -63,6 +67,7 @@ module Fingerly
       )
       @events = Events.new(self)
       @device_check = DeviceCheck.new(self)
+      @agents = Agents.new(self)
       freeze
     end
 
@@ -146,6 +151,28 @@ module Fingerly
         nil
       )
       raise consume_error(result) unless (200..299).cover?(result.status)
+
+      decode(result.body)
+    end
+
+    # Performs one authenticated JSON POST and returns the decoded body.
+    #
+    # Never retried: the caller decides what a failure means.
+    #
+    # @raise [APIError] on any non-2xx response
+    # @api private
+    def post_json(path, body)
+      result = @transport.call(
+        Net::HTTP::Post, @base_path + path,
+        {
+          "x-api-key" => @secret_key,
+          "accept" => "application/json",
+          "content-type" => "application/json",
+          "user-agent" => USER_AGENT
+        }.freeze,
+        body
+      )
+      raise api_error(result) unless (200..299).cover?(result.status)
 
       decode(result.body)
     end
@@ -247,7 +274,8 @@ module Fingerly
         # tree.
         details: error.key?("details") ? redact_tree(error["details"]) : nil,
         request_id: redact(envelope["request_id"] || header(result, "x-request-id")),
-        retry_after: retry_after(header(result, "retry-after"))
+        retry_after: retry_after(header(result, "retry-after")),
+        rate_limit_scope: redact(header(result, "fingerly-ratelimit-scope"))
       )
     end
 
@@ -331,16 +359,28 @@ module Fingerly
     # @param limit [Integer, nil] rows per page; the server caps it at 200
     # @param visitor [String, nil] restricts the listing to one exact visitor
     # @param level [String, nil] restricts it to +low+, +medium+ or +high+
+    # @param kind [String, nil] restricts it to one visitor kind, such as
+    #   +ai_bot+; see {VisitorKind}. The server rejects a kind it does not know.
+    # @param ai_provider [String, nil] restricts it to AI agents from one
+    #   operator, exactly as events name it in {AiAgent#provider}, such as
+    #   +OpenAI+; the match is case-sensitive
+    # @param ai_purpose [String, nil] restricts it to AI agents with one
+    #   purpose, such as +user_fetch+; see {AiPurpose}. The server rejects a
+    #   purpose it does not know.
     # @return [EventPage]
     # @raise [APIError] on any non-2xx response
-    def list(from: nil, to: nil, page: nil, limit: nil, visitor: nil, level: nil)
+    def list(from: nil, to: nil, page: nil, limit: nil, visitor: nil, level: nil,
+             kind: nil, ai_provider: nil, ai_purpose: nil)
       query = {
         "from" => from && Events.instant(from),
         "to" => to && Events.instant(to),
         "page" => page && Config.positive_int(page, "page"),
         "limit" => limit && Config.positive_int(limit, "limit"),
         "visitor" => visitor,
-        "level" => level
+        "level" => level,
+        "kind" => kind,
+        "ai_provider" => ai_provider,
+        "ai_purpose" => ai_purpose
       }.compact
 
       suffix = query.empty? ? "" : "?#{URI.encode_www_form(query)}"
@@ -502,18 +542,18 @@ module Fingerly
   # Reads or writes Apple's two DeviceCheck bits for the device behind an iOS
   # event. Reached as +fingerly.device_check+.
   #
-  # Fingerly holds the DeviceCheck token that came with an identification for
-  # one hour, and spends it once: a read or a write, never both. Apple treats
-  # each token as single-use, so a flow that reads and then marks a device,
-  # such as a once-per-device free trial, reads on one identification and
-  # writes on the next.
+  # Fingerly holds the two DeviceCheck tokens that came with an identification
+  # for one hour, and spends each once: a read spends the read token, a write
+  # the write token. Apple treats each token as single-use, so a flow that
+  # reads and then marks a device, such as a once-per-device free trial, reads
+  # and writes with the same request ID.
   #
   # A +503+ (+device_check_unavailable+) or a transport failure is retried
   # with the same request; Apple lets a token be retried only that way, and
   # the API answers +409 device_check_spent+ to a retry that differs.
   #
   #   bits = fingerly.device_check.query(request_id)
-  #   fingerly.device_check.write(next_request_id, bit0: true) unless bits.bit0
+  #   fingerly.device_check.write(request_id, bit0: true) unless bits.bit0
   class DeviceCheck
     include Redacted
 
@@ -523,7 +563,7 @@ module Fingerly
       freeze
     end
 
-    # Spends the event's held token to read the device's two bits.
+    # Spends the event's held read token to read the device's two bits.
     #
     # @param request_id [String] the +request_id+ of an iOS identification
     #   made within the last hour
@@ -538,8 +578,8 @@ module Fingerly
       )
     end
 
-    # Spends the event's held token to set +bit0+, +bit1+ or both. A bit left
-    # nil keeps its value.
+    # Spends the event's held write token to set +bit0+, +bit1+ or both. A bit
+    # left nil keeps its value.
     #
     # @param request_id [String] the +request_id+ of an iOS identification
     #   made within the last hour
@@ -568,6 +608,77 @@ module Fingerly
     def path(request_id)
       "/events/#{Events.segment(request_id)}/device-check"
     end
+
+    def redacted_fields
+      []
+    end
+  end
+
+  # Reports the requests your server served, as raw input, and answers what
+  # sent each one. Reached as +fingerly.agents+.
+  #
+  # AI crawlers and fetchers that never run a page's JavaScript are seen only
+  # this way. {AgentSightings} batches, counts and remembers these answers for
+  # you; call this directly only to build that yourself.
+  class Agents
+    include Redacted
+
+    # The most requests one call may report.
+    MAX_SIGHTINGS = 200
+
+    # @api private
+    def initialize(client)
+      @client = client
+      freeze
+    end
+
+    # Reports up to {MAX_SIGHTINGS} requests in one call.
+    #
+    # Never retried: a call the server may have counted must not be counted
+    # twice. An item the server could not use is answered
+    # {VisitorKind::UNKNOWN} with a ttl of 0 in its own position, and is
+    # neither classified nor counted; the others are answered as usual.
+    #
+    # @param items [Array<AgentSightingInput>] the requests, answered in the
+    #   same order
+    # @return [AgentSightingsReport]
+    # @raise [ConfigurationError] for no items, more than {MAX_SIGHTINGS}, or
+    #   an item that is not an {AgentSightingInput}; nothing is sent
+    # @raise [APIError] on any non-2xx response: +429+ carries
+    #   {APIError#retry_after} and {APIError#rate_limit_scope}, +422+ means no
+    #   item in the batch was usable
+    # @raise [TimeoutError, ConnectionError] when no answer arrived
+    def report_sightings(items)
+      unless items.is_a?(Array) && (1..MAX_SIGHTINGS).cover?(items.size) &&
+             items.all?(AgentSightingInput)
+        raise ConfigurationError,
+              "items must be 1 to #{MAX_SIGHTINGS} Fingerly::AgentSightingInput values"
+      end
+
+      body = JSON.generate({ "items" => items.map { |item| Agents.wire(item) } })
+      AgentSightingsReport.new(@client.post_json("/agents/sightings", body))
+    end
+
+    # One item as JSON can carry it: a header that is not valid UTF-8 has its
+    # bad bytes replaced, since JSON strings are Unicode.
+    #
+    # @api private
+    def self.wire(item)
+      item.to_h.transform_values { |value| value.is_a?(String) ? utf8(value) : value }
+    end
+
+    # A string as JSON carries it: its bytes read as UTF-8, each invalid
+    # sequence replaced by U+FFFD, whatever encoding it was tagged with.
+    #
+    # @api private
+    def self.utf8(value)
+      return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+
+      text = value.dup.force_encoding(Encoding::UTF_8)
+      text.valid_encoding? ? text : text.scrub
+    end
+
+    private
 
     def redacted_fields
       []

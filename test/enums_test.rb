@@ -11,13 +11,13 @@ class EnumsTest < Minitest::Test
       high_activity tampering device_farm developer_tools geo_mismatch device_inconsistent
       tor proxy residential_proxy residential_proxy_low_confidence
       residential_proxy_medium_confidence residential_proxy_high_confidence
-      vpn_public vpn_timezone vpn_relay vpn_mobile vpn_os_mismatch
+      vpn_public vpn_relay vpn_mobile vpn_os_mismatch
       vpn_low_confidence vpn_medium_confidence vpn_high_confidence
       ip_blocklist_email_spam ip_blocklist_attack_source ip_abuser datacenter_ip bogon_ip
       anycast_ip
-      incognito bad_bot automation fetch_metadata_missing web_ticket_missing
+      incognito bad_bot ai_spoofed automation fetch_metadata_missing web_ticket_missing
       web_ticket_invalid antidetect_browser virtual_machine fingerprint_suppressed
-      privacy_settings embedded_web_view remote_control
+      identity_obfuscated privacy_settings embedded_web_view remote_control
       emulator root_apps app_cloner jailbreak simulator frida mitm_attack active_call
       attestation_missing attestation_downgrade repeated_reinstall device_activity_high
       device_activity_very_high play_device_integrity_failed play_app_unrecognized
@@ -47,7 +47,11 @@ class EnumsTest < Minitest::Test
     Fingerly::Platform => %w[web android ios],
     Fingerly::AnonymityNetwork => %w[tor relay vpn proxy hosting],
     Fingerly::DeviceKind => %w[desktop mobile tablet server],
-    Fingerly::VisitorKind => %w[human ai_bot automation search_crawler]
+    Fingerly::VisitorKind => %w[human ai_bot automation search_crawler unknown],
+    Fingerly::AiPurpose => %w[training search user_fetch agent],
+    Fingerly::AiRuntime => %w[provider_cloud hosted_browser user_device],
+    Fingerly::AiVerificationMethod => %w[signature ip_list reverse_dns none],
+    Fingerly::AiVerificationResult => %w[pass fail not_attempted]
   }.freeze
 
   def test_every_module_lists_exactly_the_server_values_in_order

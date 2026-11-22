@@ -27,6 +27,12 @@ module Fingerly
     # The one Fingerly API origin.
     DEFAULT_ENDPOINT = "https://api.fingerly.io"
 
+    # What a caller's callback or logger may raise and the SDK still contains.
+    # Beyond StandardError: a +NotImplementedError+ left in a callback, or a
+    # recursion too deep, would otherwise fail the application's response.
+    # Exit, interrupt and out-of-memory are left to propagate.
+    CALLBACK_ERRORS = [StandardError, ScriptError, SystemStackError].freeze
+
     # The environment a Fingerly key is scoped to.
     Scope = Struct.new(:environment)
 

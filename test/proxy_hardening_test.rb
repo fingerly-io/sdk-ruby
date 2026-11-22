@@ -381,6 +381,23 @@ class ProxyHardeningTest < Minitest::Test
     end
   end
 
+  # What a callback or logger raises beyond StandardError is still the
+  # proxy's own 500, never an exception out of the proxy.
+  def test_a_callback_that_raises_beyond_standard_error_is_still_the_proxys_own_error
+    loud = Object.new
+    def loud.warn(_line) = raise(NotImplementedError, "todo")
+    FakeAPI.run(FakeAPI.json(200, "{}")) do |api|
+      [NotImplementedError, SystemStackError].each do |error|
+        response = build(api.origin, client_ip: ->(_r) { raise error }, logger: loud).call(env_for)
+
+        assert_equal 500, response[0], error.name
+        assert_equal "The client IP callback returned no valid address", body_of(response)
+      end
+
+      assert_empty api.requests
+    end
+  end
+
   # ---- D: path, method, target --------------------------------------------
 
   OTHER_PATHS = [
