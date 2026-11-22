@@ -706,7 +706,8 @@ handler such as `trap("TERM")`.
 `fingerly.agents.report_sightings(items)` is the call underneath, for building
 your own batching: it takes up to 200 `Fingerly::AgentSightingInput` values
 and returns an `AgentSightingsReport` with `rules_version` and one
-`AgentSighting` per item, in order. A `429` raises an `APIError` with
+`AgentSighting` per item, in order; an item of another shape than the API
+documents is `Fingerly::AgentSightings::UNKNOWN`. A `429` raises an `APIError` with
 `retry_after` and `rate_limit_scope` (`APIError::RATE_LIMIT_SCOPE_DAILY` for
 the daily allowance).
 

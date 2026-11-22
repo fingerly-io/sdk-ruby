@@ -53,12 +53,23 @@ class DecodingTest < Minitest::Test
     end
   end
 
-  def test_a_sighting_whose_ai_lacks_its_verification_fails_on_read
+  # One unusable item is that request's answer, unknown; the others still
+  # read. Only a body that is not an answer at all is an error.
+  def test_a_sighting_whose_ai_lacks_its_verification_reads_as_unknown
+    good = { "ttl" => 60, "visitor_kind" => "human" }
     payload = { "rules_version" => "r1",
                 "items" => [{ "ttl" => 60, "visitor_kind" => "ai_bot",
-                              "ai" => AI.except("verification") }] }
+                              "ai" => AI.except("verification") }, good, "GPTBot", nil] }
+    report = Fingerly::AgentSightingsReport.new(payload)
 
-    assert_raises(Fingerly::Error) { Fingerly::AgentSightingsReport.new(payload) }
+    assert_equal 4, report.items.size
+    assert_same Fingerly::AgentSightings::UNKNOWN, report.items[0]
+    assert_equal "human", report.items[1].visitor_kind
+    assert_same Fingerly::AgentSightings::UNKNOWN, report.items[2]
+    assert_same Fingerly::AgentSightings::UNKNOWN, report.items[3]
+    assert_raises(Fingerly::Error) do
+      Fingerly::AgentSightingsReport.new("rules_version" => "r1", "items" => {})
+    end
   end
 
   def test_fields_of_another_type_read_as_absent

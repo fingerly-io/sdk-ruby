@@ -88,10 +88,18 @@ class AgentsTest < Minitest::Test
   end
 
   def test_a_body_of_another_shape_is_an_error
-    ['{"items":[]}', '{"rules_version":"r1","items":[1]}', "[]"].each do |body|
+    ['{"items":[]}', '{"rules_version":"r1","items":{}}', "[]"].each do |body|
       FakeAPI.run(FakeAPI.json(200, body)) do |api|
         assert_raises(Fingerly::Error) { client(api).agents.report_sightings([input]) }
       end
+    end
+  end
+
+  def test_an_item_of_another_shape_is_unknown
+    FakeAPI.run(FakeAPI.json(200, '{"rules_version":"r1","items":[1]}')) do |api|
+      report = client(api).agents.report_sightings([input])
+
+      assert_equal [Fingerly::AgentSightings::UNKNOWN], report.items
     end
   end
 

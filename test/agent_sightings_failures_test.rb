@@ -314,6 +314,31 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
+  # An item the SDK cannot read answers its own request unknown; the rest of
+  # the batch is remembered as usual, and nothing is logged as unreadable.
+  def test_an_unusable_item_leaves_the_others_answered
+    handler = lambda do |_req, res|
+      res.status = 200
+      res["content-type"] = "application/json"
+      res.body = JSON.generate(
+        "rules_version" => "r1",
+        "items" => [{ "ttl" => 60, "visitor_kind" => "ai_bot", "ai" => { "name" => "GPTBot" } },
+                    { "ttl" => 60, "visitor_kind" => "human" }]
+      )
+    end
+    FakeAPI.run(handler) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env(user_agent: "broken"))
+      fingerly.report(env(user_agent: "fine"))
+      fingerly.flush
+
+      assert_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env(user_agent: "broken"))
+      assert_equal Fingerly::VisitorKind::HUMAN,
+                   fingerly.lookup(env(user_agent: "fine")).visitor_kind
+      assert_empty @logger.lines
+    end
+  end
+
   # The bound counts the batch in flight, so a kept batch always fits back.
   def test_the_buffer_bound_counts_the_batch_in_flight
     release = Queue.new

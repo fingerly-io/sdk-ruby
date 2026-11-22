@@ -546,7 +546,9 @@ module Fingerly
     #   remembered answer is stale
     attr_reader :rules_version
     # @return [Array<AgentSighting>] one answer per reported request, in the
-    #   same order
+    #   same order. An item that is not an answer of the documented shape,
+    #   such as one whose +ai+ lacks its verification, is
+    #   {AgentSightings::UNKNOWN}: the others still count.
     attr_reader :items
     # @return [Hash] the response body exactly as it arrived
     attr_reader :raw
@@ -556,14 +558,25 @@ module Fingerly
     def initialize(payload)
       items = payload["items"]
       version = payload["rules_version"]
-      unless items.is_a?(Array) && version.is_a?(String) && items.all?(Hash)
+      unless items.is_a?(Array) && version.is_a?(String)
         raise Error, "Fingerly API returned an agent sightings answer of another shape"
       end
 
       @rules_version = version
-      @items = items.map { |item| AgentSighting.new(item) }.freeze
+      @items = items.map { |item| AgentSightingsReport.answer(item) }.freeze
       @raw = payload
       freeze
+    end
+
+    # One item as an answer, or {AgentSightings::UNKNOWN} when it is not one.
+    #
+    # @api private
+    def self.answer(item)
+      return AgentSightings::UNKNOWN unless item.is_a?(Hash)
+
+      AgentSighting.new(item)
+    rescue Error
+      AgentSightings::UNKNOWN
     end
 
     def inspect
