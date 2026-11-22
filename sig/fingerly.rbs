@@ -595,6 +595,8 @@ module Fingerly
     ) -> String?
     def self.canonical_ip: (untyped) -> String?
     def self.monotonic: () -> Float
+    def self.trap_context?: () -> bool
+    def self.outside_trap: () { () -> void } -> nil
 
     def inspect: () -> String
 

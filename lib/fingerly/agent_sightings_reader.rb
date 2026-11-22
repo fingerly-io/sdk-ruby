@@ -28,6 +28,27 @@ module Fingerly
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
+    # Whether the caller runs inside a signal handler, where Ruby refuses to
+    # lock a Mutex.
+    #
+    # @api private
+    def self.trap_context?
+      Mutex.new.synchronize { false }
+    rescue ThreadError
+      true
+    end
+
+    # Runs the block on a thread of its own and waits for it, for a call made
+    # inside a signal handler.
+    #
+    # @api private
+    def self.outside_trap(&block)
+      Thread.new(&block).join
+      nil
+    rescue StandardError
+      nil
+    end
+
     # The cache key of section 4.1 of the agent sightings contract, and the
     # canonical address it hashes.
     #
@@ -92,9 +113,13 @@ module Fingerly
         @log = log
       end
 
+      # @param request [Hash, #env] the Rack environment, or a request object
+      #   that holds one
       # @return [Sighting, nil] nil when the request is not reported at all:
       #   a user agent over the limit, or no usable client address
-      def sighting(env)
+      # @raise [ArgumentError] for anything else
+      def sighting(request)
+        env = Reader.environment(request)
         user_agent = env["HTTP_USER_AGENT"]
         user_agent = "" unless user_agent.is_a?(String)
         return nil if user_agent.bytesize > MAX_HEADER_BYTES
@@ -118,6 +143,13 @@ module Fingerly
         }.compact
         Sighting.new(Key.digest(user_agent, ip, signature_agent.to_s, signed), signed, fields,
                      fields.sum { |_name, value| value.bytesize })
+      end
+
+      def self.environment(request)
+        return request if request.is_a?(Hash)
+        return request.env if request.respond_to?(:env)
+
+        raise ArgumentError, "a Rack environment or request is required"
       end
 
       private

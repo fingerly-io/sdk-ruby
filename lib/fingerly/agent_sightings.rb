@@ -133,7 +133,7 @@ module Fingerly
     # @return [AgentSighting] the answer, or {UNKNOWN}: serve the request as
     #   usual
     def lookup(request)
-      sighting = @reader.sighting(environment(request))
+      sighting = @reader.sighting(request)
       return UNKNOWN if sighting.nil?
 
       @lock.synchronize do
@@ -156,7 +156,7 @@ module Fingerly
     def report(request)
       return nil if @closed
 
-      sighting = @reader.sighting(environment(request))
+      sighting = @reader.sighting(request)
       return nil if sighting.nil?
 
       @lock.synchronize do
@@ -174,10 +174,12 @@ module Fingerly
     #
     # For serverless runtimes, before an invocation ends; long-running servers
     # need not call it. Sends nothing while reporting is paused by a refusal.
-    # Never raises.
+    # Never raises, and works from a signal handler too.
     #
     # @return [nil]
     def flush
+      return AgentSightings.outside_trap { flush } if AgentSightings.trap_context?
+
       loop do
         break unless await_idle(AgentSightings.monotonic + IN_FLIGHT_WAIT)
         break unless flush_once == :sent
@@ -190,11 +192,15 @@ module Fingerly
 
     # Stops the background thread, then flushes what is pending as {#flush}
     # does, unless reporting is paused. Later reports are ignored; {#lookup}
-    # keeps answering from memory.
+    # keeps answering from memory. Safe to call more than once, from several
+    # threads at once, and from a signal handler such as +trap("TERM")+.
     #
     # @return [nil]
     def close
+      return AgentSightings.outside_trap { close } if AgentSightings.trap_context?
+
       thread = @lock.synchronize do
+        forked!
         @closed = true
         @changed.broadcast
         @thread
@@ -219,13 +225,6 @@ module Fingerly
 
     def now
       @clock.call
-    end
-
-    def environment(request)
-      return request if request.is_a?(Hash)
-      return request.env if request.respond_to?(:env)
-
-      raise ArgumentError, "a Rack environment or request is required"
     end
 
     # A forked child starts over: its parent reports what was pending, and
@@ -282,6 +281,7 @@ module Fingerly
     # @return [Boolean] false when the deadline passed first
     def await_idle(deadline)
       @lock.synchronize do
+        forked!
         while @in_flight
           left = deadline - AgentSightings.monotonic
           return false if left <= 0
@@ -298,6 +298,7 @@ module Fingerly
     # @return [Symbol] +:sent+, +:failed+, +:busy+ or +:idle+
     def flush_once
       batch = @lock.synchronize do
+        forked!
         return :busy if @in_flight
         return :idle if @buffer.empty? || paused?
 

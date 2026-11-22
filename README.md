@@ -692,6 +692,17 @@ clean shutdown:
 at_exit { SIGHTINGS.close }
 ```
 
+Register it next to where you build the instance. Under Puma, clustered or
+not, and Unicorn with `preload_app`, every forked worker inherits the hook and
+sends its own pending reports when it stops gracefully, and a worker never
+sends what its parent holds. Unicorn stops gracefully on `QUIT`; on `TERM` or
+`INT` it ends its workers at once, without running exit hooks, so what they
+held is lost. `close` waits up to 6 seconds for a batch already in flight,
+then sends what is left one batch at a time, each within 5 seconds, and stops
+at the first that fails. `close` and `flush` never raise, may be called more
+than once or from several threads at once, and also work inside a signal
+handler such as `trap("TERM")`.
+
 `fingerly.agents.report_sightings(items)` is the call underneath, for building
 your own batching: it takes up to 200 `Fingerly::AgentSightingInput` values
 and returns an `AgentSightingsReport` with `rules_version` and one

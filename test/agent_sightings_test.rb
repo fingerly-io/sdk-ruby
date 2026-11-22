@@ -488,4 +488,62 @@ class AgentSightingsTest < Minitest::Test
       assert_equal 202, sent.size
     end
   end
+
+  # A worker that serves nothing, then closes at exit, must not send what its
+  # parent still holds: the parent sends that itself.
+  def test_a_forked_child_that_closes_does_not_send_its_parents_reports
+    skip "fork is not available" unless Process.respond_to?(:fork)
+
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env(user_agent: "parent"))
+      pid = fork do
+        fingerly.close
+        exit!(0)
+      end
+      Process.wait(pid)
+
+      assert_empty api.requests
+      fingerly.close
+      sent = api.requests.flat_map { |request| items_of(request).map { |item| item["user_agent"] } }
+
+      assert_equal ["parent"], sent
+    end
+  end
+
+  # Ruby refuses a Mutex inside a signal handler; a close from trap("TERM")
+  # still sends what is pending.
+  def test_close_and_flush_work_from_a_signal_handler
+    skip "fork is not available" unless Process.respond_to?(:fork)
+
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        Signal.trap("USR1") { fingerly.flush }
+        Signal.trap("TERM") do
+          fingerly.close
+          exit!(0)
+        end
+        fingerly.report(env(user_agent: "flushed"))
+        Process.kill("USR1", Process.pid)
+        sleep 0.5
+        fingerly.report(env(user_agent: "closed"))
+        writer.puts "ready"
+        sleep 10
+        exit!(1)
+      end
+      writer.close
+      reader.gets
+
+      assert_equal 1, api.requests.size
+      Process.kill("TERM", pid)
+      _, status = Process.wait2(pid)
+      sent = api.requests.flat_map { |request| items_of(request).map { |item| item["user_agent"] } }
+
+      assert_equal %w[flushed closed], sent
+      assert_predicate status, :success?
+    end
+  end
 end
