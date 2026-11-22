@@ -18,7 +18,8 @@ class EnumsTest < Minitest::Test
       incognito bad_bot ai_spoofed automation fetch_metadata_missing web_ticket_missing
       web_ticket_invalid antidetect_browser virtual_machine fingerprint_suppressed
       identity_obfuscated privacy_settings embedded_web_view remote_control
-      emulator root_apps app_cloner jailbreak simulator frida mitm_attack active_call
+      emulator root_apps bootloader_unlocked app_cloner jailbreak simulator frida mitm_attack
+      active_call
       attestation_missing attestation_downgrade repeated_reinstall device_activity_high
       device_activity_very_high play_device_integrity_failed play_app_unrecognized
       attestation_failed report_incomplete probe_errors custom_root_ca secondary_user_profile
