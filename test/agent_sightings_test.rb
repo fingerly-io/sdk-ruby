@@ -335,6 +335,38 @@ class AgentSightingsTest < Minitest::Test
     fingerly&.instance_variable_set(:@in_flight, false)
   end
 
+  # The background thread can take a batch between flush's wait for it and
+  # flush's own send. flush then waits for that one too, and still sends
+  # the rest before it returns.
+  def test_flush_waits_for_a_flush_that_started_after_its_wait
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env(user_agent: "pending"))
+      fingerly.instance_variable_set(:@in_flight, true)
+      raced = false
+      fingerly.define_singleton_method(:await_idle) do |deadline|
+        unless raced
+          raced = true
+          Thread.new do
+            sleep 0.3
+            @lock.synchronize do
+              @in_flight = false
+              @changed.broadcast
+            end
+          end
+          return true
+        end
+        super(deadline)
+      end
+      fingerly.flush
+
+      assert raced
+      sent = api.requests.flat_map { |request| items_of(request).map { |item| item["user_agent"] } }
+
+      assert_equal ["pending"], sent
+    end
+  end
+
   def test_the_buffer_holds_at_most_a_thousand_items_and_counts_the_rest
     FakeAPI.run(status(429, "retry-after" => "3600")) do |api|
       fingerly = sightings(api)

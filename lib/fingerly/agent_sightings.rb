@@ -184,8 +184,10 @@ module Fingerly
       return AgentSightings.outside_trap(locks) { flush } if AgentSightings.trap_context?
 
       loop do
-        break unless await_idle(AgentSightings.monotonic + IN_FLIGHT_WAIT)
-        break unless flush_once == :sent
+        outcome = await_idle(AgentSightings.monotonic + IN_FLIGHT_WAIT) ? flush_once : :failed
+        # The background thread took a batch after the wait: wait for it too.
+        next if outcome == :busy
+        break unless outcome == :sent
         break if @lock.synchronize { @buffer.empty? }
       end
       nil
