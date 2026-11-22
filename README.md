@@ -36,7 +36,7 @@ device behind each session and scores how suspicious it is.
 2. **Install.** Add it to your `Gemfile`:
 
    ```ruby
-   gem "fingerly", "~> 0.4.1"
+   gem "fingerly", "~> 0.5.0"
    ```
 
 3. **Read an event.**
@@ -533,7 +533,7 @@ then sees a path that is not its own and answers `404`.
 | Origin or platform | Requests without either `Origin` or a validated native `X-Fingerly-SDK-Platform` header (`ios`, `android`, `react-native`, `react-native-ios`, `react-native-android`, `flutter`, `flutter-ios`, `flutter-android`, `lynx-ios`, `lynx-android`, `capacitor`, `kotlin-multiplatform`) are rejected locally with `400` (`missing_origin`), and `x-fingerly-origin` is never synthesized from `Host`, `Referer` or the request URL. A request is forwarded on one channel only: with an `Origin` the proxy sends `x-fingerly-origin` and drops the platform header, and without one it sends the validated platform. |
 | Body size | Bodies over 1 MiB get `413`, enforced while reading rather than after buffering. |
 | Forwarded headers | All incoming `x-fingerly-*`, `cookie` and `authorization` headers are stripped, restoring only a validated `x-fingerly-sdk-platform` (when there is no `Origin`) alongside `x-fingerly-host`, `idempotency-key`, `sec-fetch-*`, `sec-ch-ua-*` and the Web Bot Auth `signature`, `signature-input` and `signature-agent` (each dropped when over 4096 bytes). |
-| Proxy identity | The proxy reports itself upstream as `ruby/0.4.1` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
+| Proxy identity | The proxy reports itself upstream as `ruby/0.5.0` in `x-fingerly-proxy-version`, which the dashboard shows per proxy. |
 | Fingerly unreachable | The visitor gets a gateway error rather than your application's `500`. |
 | Deadline passes | `504 Gateway timeout` when `timeout:` (5 seconds by default) passes. |
 | Any other upstream failure | `502 Bad gateway`, whether the connection was refused or reset, the name did not resolve, or the answer was malformed, cut short or over 4 MiB. Redirects are never followed, and an upstream redirect or a status outside `200` to `599` is answered `502` as well. |
