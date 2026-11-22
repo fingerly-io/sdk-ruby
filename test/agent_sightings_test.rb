@@ -399,17 +399,54 @@ class AgentSightingsTest < Minitest::Test
       assert_empty api.requests
       assert_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env(user_agent: long))
 
-      # A signature header over the limit is left out; Host goes as received.
+      # A signature header or Host over the limit is left out; the request is
+      # still reported.
       fingerly.report(env(signature: long, signature_input: "sig1=()", host: long))
       fingerly.report(env(user_agent: "second", signature: "x" * 4096, signature_agent: long))
       fingerly.flush
       sent = items_of(api.requests.first)
 
       refute sent[0].key?("signature")
-      assert_equal long, sent[0]["host"]
+      refute sent[0].key?("host")
       assert_equal "sig1=()", sent[0]["signature_input"]
       assert_equal 4096, sent[1]["signature"].bytesize
       refute sent[1].key?("signature_agent")
+    end
+  end
+
+  # The server measures each field after JSON decoding, where an invalid
+  # byte is U+FFFD, three bytes, and refuses the whole batch for one item
+  # over 4096. Limits are measured the same way, so no item it would refuse
+  # is ever sent, and invalid bytes never stop the batch being encoded.
+  def test_a_user_agent_or_method_over_the_limit_as_sent_is_not_reported
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      fingerly.report(env(user_agent: "\xFF".b * 2000))
+      fingerly.report(env.merge("REQUEST_METHOD" => "G" * 4097))
+      fingerly.flush
+
+      assert_equal 0, api.requests.size
+    end
+  end
+
+  def test_limits_are_measured_on_the_value_as_sent
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      invalid = "\xFF".b * 2000
+      fingerly.report(env(user_agent: "kept", host: invalid, signature: invalid,
+                          signature_input: "sig1=()", signature_agent: "\xFE".b * 10))
+      fingerly.report(env(user_agent: "Bot/1.0 (\xC3\xBC\xFF)".b))
+      fingerly.flush
+      sent = items_of(api.requests.first)
+
+      assert_equal 2, sent.size
+      refute sent[0].key?("host")
+      refute sent[0].key?("signature")
+      assert_equal "\u{FFFD}" * 10, sent[0]["signature_agent"]
+      assert_equal "Bot/1.0 (ü\u{FFFD})", sent[1]["user_agent"]
+      sent.each do |item|
+        item.each_value { |value| assert_operator value.to_s.bytesize, :<=, 4096 }
+      end
     end
   end
 

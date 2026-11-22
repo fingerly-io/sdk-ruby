@@ -151,14 +151,20 @@ module Fingerly
 
       # @param request [Hash, #env] the Rack environment, or a request object
       #   that holds one
+      # Every limit is measured on the value as it is sent: UTF-8, with each
+      # invalid byte sequence replaced by U+FFFD, which is three bytes. The
+      # cache key still hashes the bytes as received.
+      #
       # @return [Sighting, nil] nil when the request is not reported at all:
-      #   a user agent over the limit, or no usable client address
+      #   a user agent or method over the limit, or no usable client address
       # @raise [ArgumentError] for anything else
       def sighting(request)
         env = Reader.environment(request)
         user_agent = env["HTTP_USER_AGENT"]
         user_agent = "" unless user_agent.is_a?(String)
-        return nil if user_agent.bytesize > MAX_HEADER_BYTES
+        sent_user_agent = Agents.utf8(user_agent)
+        method = Agents.utf8(env["REQUEST_METHOD"].to_s)
+        return nil if [sent_user_agent, method].any? { |value| value.bytesize > MAX_HEADER_BYTES }
 
         ip = client_address(env)
         return nil if ip.nil?
@@ -169,13 +175,11 @@ module Fingerly
         signature_input = header(env, "HTTP_SIGNATURE_INPUT")
         signature_agent = header(env, "HTTP_SIGNATURE_AGENT")
         signed = !signature.nil? && !signature_input.nil?
-        # Host goes as received: the server does not bound it.
-        host = env["HTTP_HOST"]
         fields = {
-          user_agent: user_agent, client_ip: ip,
-          host: host.is_a?(String) && !host.empty? ? host : nil,
-          request_method: env["REQUEST_METHOD"].to_s, signature: signature,
-          signature_input: signature_input, signature_agent: signature_agent
+          user_agent: sent_user_agent, client_ip: ip, host: bounded(env["HTTP_HOST"]),
+          request_method: method, signature: signature && Agents.utf8(signature),
+          signature_input: signature_input && Agents.utf8(signature_input),
+          signature_agent: signature_agent && Agents.utf8(signature_agent)
         }.compact
         Sighting.new(Key.digest(user_agent, ip, signature_agent.to_s, signed), signed, fields,
                      fields.sum { |_name, value| value.bytesize })
@@ -191,12 +195,22 @@ module Fingerly
       private
 
       # A Web Bot Auth header as received, or nil when absent, empty,
-      # whitespace only or over the limit.
+      # whitespace only or over the limit as sent.
       def header(env, name)
         value = env[name]
-        return nil unless value.is_a?(String) && !value.strip.empty?
+        return nil unless value.is_a?(String)
 
-        value.bytesize > MAX_HEADER_BYTES ? nil : value
+        sent = Agents.utf8(value)
+        sent.strip.empty? || sent.bytesize > MAX_HEADER_BYTES ? nil : value
+      end
+
+      # The Host as sent, or nil when absent, empty or over the limit: it is
+      # only read to check a signature, so the request is still reported.
+      def bounded(host)
+        return nil unless host.is_a?(String)
+
+        sent = Agents.utf8(host)
+        sent.empty? || sent.bytesize > MAX_HEADER_BYTES ? nil : sent
       end
 
       # The same trusted address the proxy forwards, canonical, or nil.

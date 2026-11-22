@@ -665,7 +665,7 @@ Rack middleware can call `SIGHTINGS.report(env)` itself after its response.
 
 | Sent for each request | Never sent, never logged |
 | --- | --- |
-| `User-Agent` as received (a value over 4096 bytes is not reported at all, and stays `UNKNOWN`), the address `client_ip` returned (a request without one is not reported), `Host`, the method, the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers (each left out when over 4096 bytes), and how many times the same request was seen since the last report | The path, the query string, cookies, `Authorization`, any other header, the request body and your response |
+| `User-Agent` as received (a value over 4096 bytes is not reported at all, and stays `UNKNOWN`), the address `client_ip` returned (a request without one is not reported), `Host` (left out when over 4096 bytes), the method (a request whose method is over 4096 bytes is not reported), the Web Bot Auth `Signature`, `Signature-Input` and `Signature-Agent` headers (each left out when over 4096 bytes), and how many times the same request was seen since the last report, at most 1,000,000. Values go as UTF-8, an invalid byte sequence as U+FFFD, and the limits count the bytes sent | The path, the query string, cookies, `Authorization`, any other header, the request body and your response |
 
 ### Memory, flushing and failures
 

@@ -661,12 +661,18 @@ module Fingerly
     #
     # @api private
     def self.wire(item)
-      item.to_h.transform_values do |value|
-        next value unless value.is_a?(String)
+      item.to_h.transform_values { |value| value.is_a?(String) ? utf8(value) : value }
+    end
 
-        text = value.dup.force_encoding(Encoding::UTF_8)
-        text.valid_encoding? ? text : text.scrub
-      end
+    # A string as JSON carries it: its bytes read as UTF-8, each invalid
+    # sequence replaced by U+FFFD, whatever encoding it was tagged with.
+    #
+    # @api private
+    def self.utf8(value)
+      return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+
+      text = value.dup.force_encoding(Encoding::UTF_8)
+      text.valid_encoding? ? text : text.scrub
     end
 
     private
