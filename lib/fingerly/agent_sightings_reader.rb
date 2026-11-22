@@ -38,6 +38,11 @@ module Fingerly
       true
     end
 
+    # Seconds {#close} or {#flush} holds up a signal handler at most: a flush
+    # in flight and one more. Past it the handler returns and the work goes
+    # on in the background.
+    TRAP_WAIT = 2 * IN_FLIGHT_WAIT
+
     # Seconds reporting stops after a 429: its Retry-After, or for none a
     # minute, and the next UTC day for the daily allowance. A Retry-After of
     # 0, or a date already past, still stops a second, an unreadable one
@@ -56,15 +61,28 @@ module Fingerly
       wait.clamp(RETRY_AFTER_MIN, RETRY_AFTER_MAX)
     end
 
-    # Runs the block on a thread of its own and waits for it, for a call made
-    # inside a signal handler.
+    # Runs the block on a thread of its own and waits for it, at most
+    # {TRAP_WAIT} seconds, for a call made inside a signal handler.
+    #
+    # The signal may have interrupted this thread while it held one of
+    # +locks+, which it releases only once the handler returns: then the
+    # block runs as soon as it does, and the handler does not wait for it,
+    # which would never end.
     #
     # @api private
-    def self.outside_trap(&block)
-      Thread.new(&block).join
+    def self.outside_trap(locks, &block)
+      thread = Thread.new(&block)
+      thread.join(TRAP_WAIT) unless locks.any?(&:owned?)
       nil
     rescue StandardError
       nil
+    end
+
+    private
+
+    # The locks {#close} and {#flush} take.
+    def locks
+      [@lock, @log_lock]
     end
 
     # The cache key of section 4.1 of the agent sightings contract, and the

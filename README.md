@@ -701,7 +701,7 @@ held is lost. `close` waits up to 6 seconds for a batch already in flight,
 then sends what is left one batch at a time, each within 5 seconds, and stops
 at the first that fails. `close` and `flush` never raise, may be called more
 than once or from several threads at once, and also work inside a signal
-handler such as `trap("TERM")`.
+handler such as `trap("TERM")`, which they hold up 12 seconds at most.
 
 `fingerly.agents.report_sightings(items)` is the call underneath, for building
 your own batching: it takes up to 200 `Fingerly::AgentSightingInput` values

@@ -511,6 +511,43 @@ class AgentSightingsTest < Minitest::Test
     end
   end
 
+  # A signal that lands while the thread it interrupts holds the SDK's lock,
+  # as a single-threaded server's request thread does for a moment on every
+  # report, must not wait for a close that needs that lock: the handler
+  # returns, and the close finishes once the lock is free.
+  def test_close_from_a_signal_that_interrupts_the_lock_holder_does_not_hang
+    skip "fork is not available" unless Process.respond_to?(:fork)
+
+    FakeAPI.run(answering) do |api|
+      fingerly = sightings(api)
+      pid = fork do
+        # A server's other threads: with none, Ruby would call the hang a
+        # deadlock and end the process instead.
+        Thread.new { sleep }
+        Signal.trap("USR1") { fingerly.close }
+        fingerly.report(env(user_agent: "pending"))
+        fingerly.instance_variable_get(:@lock).synchronize do
+          Process.kill("USR1", Process.pid)
+          sleep 0.2
+        end
+        sleep 1.5
+        exit!(0)
+      end
+      status = nil
+      exited = eventually?(8) { status = Process.wait2(pid, Process::WNOHANG)&.last }
+      unless exited
+        Process.kill("KILL", pid)
+        Process.wait(pid)
+      end
+
+      assert exited, "the signal handler never returned"
+      assert_predicate status, :success?
+      sent = api.requests.flat_map { |request| items_of(request).map { |item| item["user_agent"] } }
+
+      assert_equal ["pending"], sent
+    end
+  end
+
   # Ruby refuses a Mutex inside a signal handler; a close from trap("TERM")
   # still sends what is pending.
   def test_close_and_flush_work_from_a_signal_handler

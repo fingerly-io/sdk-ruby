@@ -181,7 +181,7 @@ module Fingerly
     #
     # @return [nil]
     def flush
-      return AgentSightings.outside_trap { flush } if AgentSightings.trap_context?
+      return AgentSightings.outside_trap(locks) { flush } if AgentSightings.trap_context?
 
       loop do
         break unless await_idle(AgentSightings.monotonic + IN_FLIGHT_WAIT)
@@ -196,11 +196,12 @@ module Fingerly
     # Stops the background thread, then flushes what is pending as {#flush}
     # does, unless reporting is paused. Later reports are ignored; {#lookup}
     # keeps answering from memory. Safe to call more than once, from several
-    # threads at once, and from a signal handler such as +trap("TERM")+.
+    # threads at once, and from a signal handler such as +trap("TERM")+,
+    # which it holds up {TRAP_WAIT} seconds at most.
     #
     # @return [nil]
     def close
-      return AgentSightings.outside_trap { close } if AgentSightings.trap_context?
+      return AgentSightings.outside_trap(locks) { close } if AgentSightings.trap_context?
 
       thread = @lock.synchronize do
         forked!
@@ -226,9 +227,7 @@ module Fingerly
       [["capacity", @capacity], ["secret_key", Redacted::MARK]]
     end
 
-    def now
-      @clock.call
-    end
+    def now = @clock.call
 
     # A forked child starts over: its parent reports what was pending, and
     # the parent's thread does not exist here. Remembered answers stay valid.
