@@ -185,7 +185,7 @@ module Fingerly
       def client_address(env)
         returned = begin
           @client_ip.call(ProxyRequest.new(env, env["PATH_INFO"].to_s))
-        rescue StandardError => e
+        rescue *Config::CALLBACK_ERRORS => e
           e
         end
         ip = Key.canonical_ip(returned)

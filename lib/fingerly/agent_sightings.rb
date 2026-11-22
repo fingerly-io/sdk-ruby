@@ -408,7 +408,7 @@ module Fingerly
 
     def log(line)
       @logger ? @logger.warn(line) : warn(line)
-    rescue StandardError
+    rescue *Config::CALLBACK_ERRORS
       nil
     end
   end

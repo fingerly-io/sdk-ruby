@@ -333,7 +333,7 @@ module Fingerly
     def client_address(env, request)
       address = begin
         @client_ip.call(request)
-      rescue StandardError => e
+      rescue *Config::CALLBACK_ERRORS => e
         e
       end
       return address if Config.ip_literal?(address)
@@ -369,7 +369,7 @@ module Fingerly
     def log(env, line)
       logger = @logger || env["rack.logger"]
       logger ? logger.warn(line) : warn(line)
-    rescue StandardError
+    rescue *Config::CALLBACK_ERRORS
       # A broken logger must not turn a gateway error into a crash.
       nil
     end

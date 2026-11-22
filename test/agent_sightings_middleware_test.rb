@@ -99,6 +99,28 @@ class AgentSightingsMiddlewareTest < Minitest::Test
     assert_equal 200, status
   end
 
+  # A callback or logger that raises beyond StandardError, such as a
+  # NotImplementedError left in place, still leaves the response alone.
+  def test_a_callback_that_raises_beyond_standard_error_never_fails_the_response
+    loud = Object.new
+    def loud.warn(_line) = raise(NotImplementedError, "todo")
+    [NotImplementedError, SystemStackError].each do |error|
+      sightings = Fingerly::AgentSightings.new(secret_key: SECRET_KEY,
+                                               client_ip: ->(_r) { raise error }, logger: loud)
+      @made << sightings
+      status, = middleware(sightings, 200, "text/html").call(env)
+
+      assert_equal 200, status, error.name
+      assert_same Fingerly::AgentSightings::UNKNOWN, sightings.lookup(env)
+    end
+    quiet_callback = Fingerly::AgentSightings.new(secret_key: SECRET_KEY, client_ip: ->(_r) {},
+                                                  logger: loud)
+    @made << quiet_callback
+    status, = middleware(quiet_callback, 200, "text/html").call(env)
+
+    assert_equal 200, status
+  end
+
   def test_an_application_error_is_the_applications
     app = Fingerly::AgentSightings::Middleware.new(->(_env) { raise IOError, "app" }, recording)
 
