@@ -521,6 +521,31 @@ class AgentSightingsTest < Minitest::Test
     end
   end
 
+  # dropped_count counts this process's own drops: a worker forked from a
+  # parent that dropped some starts at zero.
+  def test_a_forked_child_counts_only_its_own_drops
+    skip "fork is not available" unless Process.respond_to?(:fork)
+
+    FakeAPI.run(status(429, "retry-after" => "3600")) do |api|
+      fingerly = sightings(api)
+      1001.times { |i| fingerly.report(env(user_agent: "ua-#{i}")) }
+
+      assert_equal 1, fingerly.dropped_count
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        writer.puts fingerly.dropped_count
+        writer.close
+        exit!(0)
+      end
+      writer.close
+      Process.wait(pid)
+
+      assert_equal "0", reader.read.strip
+      assert_equal 1, fingerly.dropped_count
+    end
+  end
+
   # A worker that serves nothing, then closes at exit, must not send what its
   # parent still holds: the parent sends that itself.
   def test_a_forked_child_that_closes_does_not_send_its_parents_reports

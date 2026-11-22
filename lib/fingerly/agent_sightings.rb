@@ -220,7 +220,10 @@ module Fingerly
     # @return [Integer] requests not reported because the pending buffer was
     #   full, in this process
     def dropped_count
-      @lock.synchronize { @dropped }
+      @lock.synchronize do
+        forked!
+        @dropped
+      end
     end
 
     private
@@ -238,6 +241,7 @@ module Fingerly
 
       @pid = Process.pid
       @buffer.clear
+      @dropped = 0
       @in_flight = false
       @thread = nil
       @log_lock = Mutex.new
