@@ -47,10 +47,10 @@ module Fingerly
 
     # @api private
     def initialize(payload)
-      @signal = payload["signal"]
-      @group = payload["group"]
-      @weight = payload["weight"] || 0
-      @confidence = payload["confidence"]
+      @signal = Models.string(payload["signal"])
+      @group = Models.string(payload["group"])
+      @weight = payload["weight"].is_a?(Integer) ? payload["weight"] : 0
+      @confidence = Models.string(payload["confidence"])
       freeze
     end
 
@@ -60,19 +60,22 @@ module Fingerly
   end
 
   # How an {AiAgent}'s claimed identity was checked, and what that found.
+  #
+  # The API always sends both values, so neither is ever nil.
   class AiVerification
-    # @return [String, nil] +signature+, +ip_list+, +reverse_dns+ or +none+;
+    # @return [String] +signature+, +ip_list+, +reverse_dns+ or +none+;
     #   see {AiVerificationMethod}. Named for the wire field, so it hides
     #   +Object#method+ on this one class.
     attr_reader :method
-    # @return [String, nil] +pass+, +fail+ or +not_attempted+; see
+    # @return [String] +pass+, +fail+ or +not_attempted+; see
     #   {AiVerificationResult}
     attr_reader :result
 
     # @api private
+    # @raise [Error] if either value is missing or not a string
     def initialize(payload)
-      @method = payload["method"]
-      @result = payload["result"]
+      @method = Models.required_string(payload, "method", "AI agent verification")
+      @result = Models.required_string(payload, "result", "AI agent verification")
       freeze
     end
 
@@ -95,34 +98,59 @@ module Fingerly
   # against, or it could not be checked; the name is then only the client's
   # claim). {#purpose}, {#runtime} and the verification values are plain
   # strings, so a value the API adds later still reads.
+  #
+  # The API sends every field of it, so none is ever nil: an answer without
+  # one raises {Error} when it is read, never later in your code.
   class AiAgent
-    # @return [String, nil] the agent as its operator names it, such as
+    # @return [String] the agent as its operator names it, such as
     #   +ChatGPT-User+ or +Claude-User+
     attr_reader :name
-    # @return [String, nil] the company that operates it, such as +OpenAI+,
+    # @return [String] the company that operates it, such as +OpenAI+,
     #   +Anthropic+ or +Google+
     attr_reader :provider
-    # @return [String, nil] +training+, +search+, +user_fetch+ or +agent+; see
+    # @return [String] +training+, +search+, +user_fetch+ or +agent+; see
     #   {AiPurpose}
     attr_reader :purpose
-    # @return [String, nil] +provider_cloud+, +hosted_browser+ or
-    #   +user_device+; see {AiRuntime}
+    # @return [String] +provider_cloud+, +hosted_browser+ or +user_device+;
+    #   see {AiRuntime}
     attr_reader :runtime
     # @return [Boolean] true when the agent named itself, in its user agent or
     #   a signature
     attr_reader :declared
-    # @return [AiVerification, nil] how the claimed identity was checked
+    # @return [AiVerification] how the claimed identity was checked
     attr_reader :verification
 
+    # The +ai+ object of an answer, or nil when the answer has none.
+    #
     # @api private
+    # @raise [Error] if it is present but not an AI agent of the documented
+    #   shape
+    def self.from(value)
+      return nil if value.nil?
+      return new(value) if value.is_a?(Hash)
+
+      raise Error, "Fingerly API returned an AI agent that is not an object"
+    end
+
+    # @api private
+    # @raise [Error] if a field is missing or of another type
     def initialize(payload)
-      @name = payload["name"]
-      @provider = payload["provider"]
-      @purpose = payload["purpose"]
-      @runtime = payload["runtime"]
-      @declared = payload["declared"] == true
+      @name = Models.required_string(payload, "name", "AI agent")
+      @provider = Models.required_string(payload, "provider", "AI agent")
+      @purpose = Models.required_string(payload, "purpose", "AI agent")
+      @runtime = Models.required_string(payload, "runtime", "AI agent")
+      declared = payload["declared"]
+      unless [true, false].include?(declared)
+        raise Error, "Fingerly API returned an AI agent without a boolean declared"
+      end
+
+      @declared = declared
       verification = payload["verification"]
-      @verification = verification.is_a?(Hash) ? AiVerification.new(verification) : nil
+      unless verification.is_a?(Hash)
+        raise Error, "Fingerly API returned an AI agent without its verification"
+      end
+
+      @verification = AiVerification.new(verification)
       freeze
     end
 
@@ -181,18 +209,25 @@ module Fingerly
     #   +occurred_at+ as nil rather than raising, for +events.verify+, which
     #   answers +too_old+ for it
     # @api private
+    # @raise [Error] if the event is not an object, or its +ai+ is not an AI
+    #   agent of the documented shape
     def initialize(payload, lenient_time: false)
-      STRING_FIELDS.each { |name| instance_variable_set(:"@#{name}", payload[name]) }
+      raise Error, "Fingerly API returned an event that is not an object" unless payload.is_a?(Hash)
+
+      # A value of another JSON type reads as absent, so every reader returns
+      # the type it documents.
+      STRING_FIELDS.each { |name| instance_variable_set(:"@#{name}", Models.string(payload[name])) }
       @occurred_at = if lenient_time
                        Models.rfc3339(payload["occurred_at"])
                      else
                        Models.parse_instant(payload["occurred_at"])
                      end
-      @suspect_score = payload["suspect_score"]
-      @has_document = payload["has_document"] ? true : false
-      @triggers = Array(payload["triggers"]).map { |item| EventTrigger.new(item) }.freeze
-      @ai = payload["ai"].is_a?(Hash) ? AiAgent.new(payload["ai"]) : nil
-      @document = payload["document"]
+      @suspect_score = payload["suspect_score"].is_a?(Integer) ? payload["suspect_score"] : nil
+      @has_document = payload["has_document"] == true
+      triggers = payload["triggers"].is_a?(Array) ? payload["triggers"].grep(Hash) : []
+      @triggers = triggers.map { |item| EventTrigger.new(item) }.freeze
+      @ai = AiAgent.from(payload["ai"])
+      @document = payload["document"].is_a?(Hash) ? payload["document"] : nil
       @raw = payload
       freeze
     end
@@ -230,10 +265,16 @@ module Fingerly
     attr_reader :raw
 
     # @api private
+    # @raise [Error] if +rows+ is not a list of events
     def initialize(payload)
-      @rows = Array(payload["rows"]).map { |item| Event.new(item) }.freeze
-      @page = payload["page"] || 0
-      @page_size = payload["page_size"] || 0
+      rows = payload["rows"]
+      unless rows.nil? || rows.is_a?(Array)
+        raise Error, "Fingerly API returned an event page whose rows are not a list"
+      end
+
+      @rows = Array(rows).map { |item| Event.new(item) }.freeze
+      @page = payload["page"].is_a?(Integer) ? payload["page"] : 0
+      @page_size = payload["page_size"].is_a?(Integer) ? payload["page_size"] : 0
       @raw = payload
       freeze
     end
@@ -395,13 +436,13 @@ module Fingerly
 
     # @api private
     def initialize(payload)
-      @id = payload["id"]
-      @type = payload["type"]
-      @version = payload["version"]
-      @organization_id = payload["organization_id"]
-      @environment = payload["environment"]
+      @id = Models.string(payload["id"])
+      @type = Models.string(payload["type"])
+      @version = payload["version"].is_a?(Integer) ? payload["version"] : nil
+      @organization_id = Models.string(payload["organization_id"])
+      @environment = Models.string(payload["environment"])
       @created_at = payload["created_at"] ? Models.parse_instant(payload["created_at"]) : nil
-      @data = payload["data"] || {}
+      @data = payload["data"].is_a?(Hash) ? payload["data"] : {}
       @raw = payload
       freeze
     end
@@ -481,13 +522,15 @@ module Fingerly
     attr_reader :ai
 
     # @api private
+    # @raise [Error] if +ai+ is present but not an AI agent of the documented
+    #   shape
     def initialize(payload)
       ttl = payload["ttl"]
       @ttl = ttl.is_a?(Integer) && ttl.positive? ? ttl : 0
       kind = payload["visitor_kind"]
       @visitor_kind = kind.is_a?(String) ? kind : ""
       @agent = payload["agent"].is_a?(String) ? payload["agent"] : nil
-      @ai = payload["ai"].is_a?(Hash) ? AiAgent.new(payload["ai"]) : nil
+      @ai = AiAgent.from(payload["ai"])
       freeze
     end
 
@@ -534,6 +577,21 @@ module Fingerly
   # @api private
   module Models
     module_function
+
+    # @return [String, nil] the value when it is a string, otherwise nil
+    def string(value)
+      value.is_a?(String) ? value : nil
+    end
+
+    # A string field the contract requires.
+    #
+    # @raise [Error] if it is missing or not a string
+    def required_string(payload, name, what)
+      value = payload[name]
+      return value if value.is_a?(String)
+
+      raise Error, "Fingerly API returned an #{what} without a string #{name}"
+    end
 
     # Reads an RFC 3339 timestamp into a Time.
     #

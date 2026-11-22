@@ -305,20 +305,21 @@ module Fingerly
   end
 
   class AiVerification
-    attr_reader method: String?
-    attr_reader result: String?
+    attr_reader method: String
+    attr_reader result: String
 
     def initialize: (Hash[String, untyped]) -> void
   end
 
   class AiAgent
-    attr_reader name: String?
-    attr_reader provider: String?
-    attr_reader purpose: String?
-    attr_reader runtime: String?
+    attr_reader name: String
+    attr_reader provider: String
+    attr_reader purpose: String
+    attr_reader runtime: String
     attr_reader declared: bool
-    attr_reader verification: AiVerification?
+    attr_reader verification: AiVerification
 
+    def self.from: (untyped) -> AiAgent?
     def initialize: (Hash[String, untyped]) -> void
     def declared?: () -> bool
   end

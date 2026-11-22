@@ -142,7 +142,10 @@ is inside the operator's published ranges), with result
 (the name was borrowed), or `Fingerly::AiVerificationResult::NOT_ATTEMPTED`
 with method `Fingerly::AiVerificationMethod::NONE` (the operator publishes
 nothing to check against, or it could not be checked; the name is then only
-the client's claim). Only clients that run the Fingerly SDK produce events, so
+the client's claim). Every field of `event.ai` is always set, `verification`
+included, so `event.ai.verification.result` needs no nil check once
+`event.ai` is there; an answer whose `ai` lacks one raises `Fingerly::Error`
+when it is read. Only clients that run the Fingerly SDK produce events, so
 crawlers that do not run JavaScript never appear. `events.list` filters on `kind:`,
 `ai_provider:` (exact and case-sensitive, such as `"OpenAI"`) and `ai_purpose:`.
 
