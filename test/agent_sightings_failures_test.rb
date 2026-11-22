@@ -339,6 +339,33 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
+  # An item the server could not use is answered unknown with ttl 0, so it is
+  # never remembered; the others are stored, and nothing is logged or dropped.
+  def test_an_item_the_server_could_not_use_stays_unknown
+    bot = { "ttl" => 60, "visitor_kind" => Fingerly::VisitorKind::AI_BOT, "agent" => "GPTBot" }
+    handler = lambda do |_req, res|
+      res.status = 200
+      res["content-type"] = "application/json"
+      res.body = JSON.generate(
+        "rules_version" => "r1",
+        "items" => [bot, { "ttl" => 0, "visitor_kind" => Fingerly::VisitorKind::UNKNOWN }, bot]
+      )
+    end
+    FakeAPI.run(handler) do |api|
+      fingerly = sightings(api)
+      %w[a b c].each { |agent| fingerly.report(env(user_agent: agent)) }
+      fingerly.flush
+      fingerly.flush
+
+      assert_equal [%w[a b c]], sent_agents(api)
+      assert_equal Fingerly::VisitorKind::AI_BOT, fingerly.lookup(env(user_agent: "a")).visitor_kind
+      assert_same Fingerly::AgentSightings::UNKNOWN, fingerly.lookup(env(user_agent: "b"))
+      assert_equal Fingerly::VisitorKind::AI_BOT, fingerly.lookup(env(user_agent: "c")).visitor_kind
+      assert_empty @logger.lines
+      assert_equal 0, fingerly.dropped_count
+    end
+  end
+
   # The bound counts the batch in flight, so a kept batch always fits back.
   def test_the_buffer_bound_counts_the_batch_in_flight
     release = Queue.new

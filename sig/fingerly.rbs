@@ -271,6 +271,7 @@ module Fingerly
     AI_BOT: String
     AUTOMATION: String
     SEARCH_CRAWLER: String
+    UNKNOWN: String
     ALL: Array[String]
   end
 

@@ -288,14 +288,17 @@ module Fingerly
     ALL = [DESKTOP, MOBILE, TABLET, SERVER].freeze
   end
 
-  # What is behind a submission: {Event}'s +visitor_kind+.
+  # What is behind a submission: {Event}'s and {AgentSighting}'s +visitor_kind+.
   module VisitorKind
     HUMAN = "human"
     AI_BOT = "ai_bot"
     AUTOMATION = "automation"
     SEARCH_CRAWLER = "search_crawler"
+    # Only in an agent sightings answer: a request the server could not use;
+    # ttl 0, never remembered.
+    UNKNOWN = "unknown"
 
-    ALL = [HUMAN, AI_BOT, AUTOMATION, SEARCH_CRAWLER].freeze
+    ALL = [HUMAN, AI_BOT, AUTOMATION, SEARCH_CRAWLER, UNKNOWN].freeze
   end
 
   # What an AI agent's operator says its traffic is for: {AiAgent}'s

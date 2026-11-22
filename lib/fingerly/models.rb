@@ -512,7 +512,9 @@ module Fingerly
     #   agent, address and +Signature-Agent+; 0 for a signed request
     attr_reader :ttl
     # @return [String] +human+, +ai_bot+, +automation+ or +search_crawler+;
-    #   see {VisitorKind}. The API can add values, so keep an +else+ branch.
+    #   see {VisitorKind}. {VisitorKind::UNKNOWN}, with a ttl of 0, marks a
+    #   request the server could not use; it is never remembered. The API can
+    #   add values, so keep an +else+ branch.
     attr_reader :visitor_kind
     # @return [String, nil] the agent's name where the server knows it, such
     #   as +GPTBot+ or +Googlebot+

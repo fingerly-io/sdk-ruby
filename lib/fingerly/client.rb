@@ -635,7 +635,9 @@ module Fingerly
     # Reports up to {MAX_SIGHTINGS} requests in one call.
     #
     # Never retried: a call the server may have counted must not be counted
-    # twice.
+    # twice. An item the server could not use is answered
+    # {VisitorKind::UNKNOWN} with a ttl of 0 in its own position, and is
+    # neither classified nor counted; the others are answered as usual.
     #
     # @param items [Array<AgentSightingInput>] the requests, answered in the
     #   same order
@@ -643,7 +645,8 @@ module Fingerly
     # @raise [ConfigurationError] for no items, more than {MAX_SIGHTINGS}, or
     #   an item that is not an {AgentSightingInput}; nothing is sent
     # @raise [APIError] on any non-2xx response: +429+ carries
-    #   {APIError#retry_after} and {APIError#rate_limit_scope}
+    #   {APIError#retry_after} and {APIError#rate_limit_scope}, +422+ means no
+    #   item in the batch was usable
     # @raise [TimeoutError, ConnectionError] when no answer arrived
     def report_sightings(items)
       unless items.is_a?(Array) && (1..MAX_SIGHTINGS).cover?(items.size) &&

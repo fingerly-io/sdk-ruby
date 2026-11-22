@@ -204,7 +204,7 @@ missing from the module's frozen `ALL` array.
 | `Fingerly::Platform` | `Event#platform` | `WEB`, `ANDROID`, `IOS` |
 | `Fingerly::AnonymityNetwork` | `Event#anonymity_network` | `TOR`, `RELAY`, `VPN`, `PROXY`, `HOSTING` |
 | `Fingerly::DeviceKind` | `Event#device_kind` | `DESKTOP`, `MOBILE`, `TABLET`, `SERVER` |
-| `Fingerly::VisitorKind` | `Event#visitor_kind`, `events.list(kind:)` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER` |
+| `Fingerly::VisitorKind` | `Event#visitor_kind`, `events.list(kind:)`, `AgentSighting#visitor_kind` | `HUMAN`, `AI_BOT`, `AUTOMATION`, `SEARCH_CRAWLER`, and `UNKNOWN` (only in an agent sightings answer: a request the server could not use) |
 | `Fingerly::AiPurpose` | `AiAgent#purpose`, `events.list(ai_purpose:)` | `TRAINING`, `SEARCH`, `USER_FETCH`, `AGENT` |
 | `Fingerly::AiRuntime` | `AiAgent#runtime` | `PROVIDER_CLOUD`, `HOSTED_BROWSER`, `USER_DEVICE` |
 | `Fingerly::AiVerificationMethod` | `AiVerification#method` | `SIGNATURE`, `IP_LIST`, `REVERSE_DNS`, `NONE` |
@@ -681,7 +681,9 @@ Rack middleware can call `SIGHTINGS.report(env)` itself after its response.
 | `401` / `403` | The batch is dropped, nothing is sent for 60 seconds, and the refused key is logged at most once a minute. |
 | `503`, or no answer at all | The batch is kept, as old as when it was first seen, and sent again after 1, 2, 4 and up to 60 seconds. |
 | Timed out after sending | The batch is dropped, because the server may already have counted it. |
-| Any other status, `422`, `500`, `502` and `504` included | The batch is dropped and logged at most once a minute. |
+| An item the server could not use | Answered `VisitorKind::UNKNOWN` with a `ttl` of 0, so it is never remembered and that request stays `UNKNOWN`; the rest of the batch is answered as usual, and nothing is logged. |
+| `422` | No item in the batch was usable. The batch is dropped and logged at most once a minute. |
+| Any other status, `500`, `502` and `504` included | The batch is dropped and logged at most once a minute. |
 
 In every case requests are served as usual and `lookup` keeps answering from
 memory or `UNKNOWN`. Log lines go to `logger:` when you pass one and to

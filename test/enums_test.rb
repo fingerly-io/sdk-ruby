@@ -47,7 +47,7 @@ class EnumsTest < Minitest::Test
     Fingerly::Platform => %w[web android ios],
     Fingerly::AnonymityNetwork => %w[tor relay vpn proxy hosting],
     Fingerly::DeviceKind => %w[desktop mobile tablet server],
-    Fingerly::VisitorKind => %w[human ai_bot automation search_crawler],
+    Fingerly::VisitorKind => %w[human ai_bot automation search_crawler unknown],
     Fingerly::AiPurpose => %w[training search user_fetch agent],
     Fingerly::AiRuntime => %w[provider_cloud hosted_browser user_device],
     Fingerly::AiVerificationMethod => %w[signature ip_list reverse_dns none],

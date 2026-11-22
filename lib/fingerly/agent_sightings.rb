@@ -368,6 +368,7 @@ module Fingerly
                            "(#{error.status}); the batch was dropped and reporting stops for " \
                            "#{AUTH_PAUSE} seconds")
       when 503 then keep(batch)
+      # 422: no item in the batch was usable, an SDK bug, so never retried.
       else drop("the API refused a report (#{error.status})")
       end
       :failed
