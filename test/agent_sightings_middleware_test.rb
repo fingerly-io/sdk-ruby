@@ -57,6 +57,20 @@ class AgentSightingsMiddlewareTest < Minitest::Test
     assert_empty reported("/x", 200, "text/html", **options)
   end
 
+  # A configured type is read as a response's is, so its parameters, case
+  # and spaces never stop it from matching.
+  def test_configured_content_types_ignore_parameters_and_case
+    options = { content_types: ["Application/JSON; charset=utf-8", " text/csv "] }
+
+    assert_equal ["/x"], reported("/x", 200, "application/json", **options)
+    assert_equal ["/x"], reported("/x", 200, "text/csv; header=present", **options)
+    assert_empty reported("/x", 200, "", **options)
+    assert_raises(Fingerly::ConfigurationError) do
+      Fingerly::AgentSightings::Middleware.new(->(_env) {}, recording,
+                                               content_types: ["; charset=utf-8"])
+    end
+  end
+
   def test_reads_a_rack_2_header_name
     assert_equal ["/page"], reported("/page", 200, nil, headers: { "Content-Type" => "text/html" })
   end

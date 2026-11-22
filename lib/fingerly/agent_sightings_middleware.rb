@@ -39,7 +39,7 @@ module Fingerly
 
         @app = app
         @sightings = sightings
-        @content_types = strings(content_types, "content_types").map(&:downcase).freeze
+        @content_types = media_types(content_types)
         @include = prefixes(include_path_prefixes, "include_path_prefixes")
         @exclude = prefixes(exclude_path_prefixes, "exclude_path_prefixes")
         freeze
@@ -76,6 +76,15 @@ module Fingerly
         "#<Fingerly::AgentSightings::Middleware content_types=#{@content_types.inspect}>"
       end
 
+      # A Content-Type's media type, lowercase and without parameters, or nil
+      # when it names none.
+      #
+      # @api private
+      def self.media(value)
+        media = value.split(";", 2).first.to_s.strip.downcase
+        media.empty? ? nil : media
+      end
+
       private
 
       # Rack 3 names headers in lowercase; Rack 2 applications may not.
@@ -87,7 +96,18 @@ module Fingerly
         value = value.first if value.is_a?(Array)
         return nil unless value.is_a?(String)
 
-        value.split(";", 2).first.strip.downcase
+        Middleware.media(value)
+      end
+
+      # The configured types read as a response's are, so +"text/html;
+      # charset=utf-8"+ or +" Text/HTML"+ still match.
+      def media_types(value)
+        types = strings(value, "content_types").map { |type| Middleware.media(type) }
+        if types.include?(nil)
+          raise ConfigurationError, "content_types must be media types such as text/html"
+        end
+
+        types.uniq.freeze
       end
 
       def strings(value, name)
