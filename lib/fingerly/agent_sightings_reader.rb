@@ -38,6 +38,24 @@ module Fingerly
       true
     end
 
+    # Seconds reporting stops after a 429: its Retry-After, or for none a
+    # minute, and the next UTC day for the daily allowance. A Retry-After of
+    # 0, or a date already past, still stops a second, an unreadable one
+    # reads as none, and a huge one stops a day at most.
+    #
+    # @api private
+    def self.rate_limit_pause(error)
+      wait = error.retry_after
+      if wait.nil?
+        wait = RATE_LIMIT_PAUSE
+        if error.rate_limit_scope == APIError::RATE_LIMIT_SCOPE_DAILY
+          today = Time.now.utc
+          wait = (Time.utc(today.year, today.month, today.day) + 86_400 - today).ceil
+        end
+      end
+      wait.clamp(RETRY_AFTER_MIN, RETRY_AFTER_MAX)
+    end
+
     # Runs the block on a thread of its own and waits for it, for a call made
     # inside a signal handler.
     #

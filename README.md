@@ -674,7 +674,7 @@ Rack middleware can call `SIGHTINGS.report(env)` itself after its response.
 | Answers remembered | At most `capacity:` (4096 by default; a larger value than 65536 is read as 65536), least recently used dropped first. A few hundred bytes each: about 1.5 MB at the default. Each expires after the `ttl` the server gave it; a signed request is never remembered, and a new `rules_version` drops them all. |
 | Pending reports | At most 1000, the batch being sent included. Repeats of one request fold into one item with a count, signed requests excepted. When full, a new request is not reported and stays `UNKNOWN`; `dropped_count` counts them. |
 | Flushing | One background thread per process sends up to 200 items when 200 are pending, when their fields reach 64 KiB, or 2 seconds after the oldest, one flush at a time, each within 5 seconds. A forked worker starts its own thread and reports only its own requests. |
-| `429` | The batch is kept and nothing is sent until `Retry-After` has passed, or the next UTC day for the daily allowance. |
+| `429` | The batch is kept and nothing is sent until `Retry-After` has passed, or the next UTC day for the daily allowance: at least 1 second and at most 24 hours, whatever `Retry-After` said. |
 | `401` / `403` | The batch is dropped, nothing is sent for 60 seconds, and the refused key is logged at most once a minute. |
 | `503`, or no answer at all | The batch is kept, as old as when it was first seen, and sent again after 1, 2, 4 and up to 60 seconds. |
 | Timed out after sending | The batch is dropped, because the server may already have counted it. |

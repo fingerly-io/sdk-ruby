@@ -114,6 +114,22 @@ class AgentSightingsFailuresTest < Minitest::Test
     end
   end
 
+  # A huge Retry-After must not stop reporting for the life of the process.
+  def test_a_huge_retry_after_stops_a_day_at_most
+    ["2147483647", "99999999999999999999", "Fri, 01 Jan 2100 00:00:00 GMT"].each do |value|
+      FakeAPI.run(status(429, "retry-after" => value)) do |api|
+        fingerly = sightings(api)
+        fingerly.report(env)
+        fingerly.flush
+        api.handler = answering
+        @clock.advance(86_400) # a day
+        fingerly.flush
+
+        assert_equal 2, api.requests.size, value
+      end
+    end
+  end
+
   # An unreadable Retry-After, a negative one included, reads as none.
   def test_an_unreadable_retry_after_waits_a_minute
     ["-5", "soon"].each do |value|

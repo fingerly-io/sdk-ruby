@@ -62,6 +62,9 @@ module Fingerly
     RATE_LIMIT_PAUSE = 60
     # The shortest stop after a 429, whatever its Retry-After said.
     RETRY_AFTER_MIN = 1
+    # The longest stop after a 429, whatever its Retry-After said, so a huge
+    # value cannot end reporting for the life of the process.
+    RETRY_AFTER_MAX = 86_400
     # Backoff bounds, in seconds, after a 503 or a transport error.
     BACKOFF_MIN = 1
     BACKOFF_MAX = 60
@@ -352,9 +355,7 @@ module Fingerly
     def refused(error, batch)
       case error.status
       when 429
-        # A Retry-After of 0, or a date already past, still stops a second;
-        # an unreadable one reads as none.
-        pause([error.retry_after || rate_limit_wait(error), RETRY_AFTER_MIN].max)
+        pause(AgentSightings.rate_limit_pause(error))
         restore(batch)
       when 401, 403
         pause(AUTH_PAUSE)
@@ -365,15 +366,6 @@ module Fingerly
       else drop("the API refused a report (#{error.status})")
       end
       :failed
-    end
-
-    # A 429 that named no Retry-After: a daily allowance resets at the next
-    # UTC day.
-    def rate_limit_wait(error)
-      return RATE_LIMIT_PAUSE unless error.rate_limit_scope == APIError::RATE_LIMIT_SCOPE_DAILY
-
-      today = Time.now.utc
-      (Time.utc(today.year, today.month, today.day) + 86_400 - today).ceil
     end
 
     # Puts the batch back and backs off: nothing was counted.
